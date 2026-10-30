@@ -1,23 +1,285 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Makropetrol Marketing · Almacén local 1.0.0.
-Ejecutar: py marketing_almacen.py
-Dependencias para Excel/PDF: openpyxl, XlsxWriter, reportlab, Pillow.
-Un solo archivo de código. Los datos se guardan junto a él, en datos_marketing/.
-Servidor exclusivamente local (127.0.0.1); no publicar en Internet.
+"""MAKROPETROL MARKETING 1.2.0 - Streamlit, un único archivo de aplicación.
+
+PUBLICAR: subir Marketing.py y requirements.txt. Archivo principal: Marketing.py.
+EJECUTAR EN PC: py -m streamlit run Marketing.py
+CONFIGURAR: [app] y [postgres] en Streamlit Settings > Secrets, nunca en GitHub.
+
+La interfaz HTML/JS está incluida al final y la sirve Streamlit como componente.
+No inicia HTTPServer, no llama webbrowser.open ni abre puertos adicionales.
+Inventario y movimientos se guardan exclusivamente en PostgreSQL en producción.
+El backend sqlite-test solo existe para pruebas explícitas de desarrollo.
+No importa ni sobrescribe automáticamente bases locales de versiones anteriores.
 """
 from __future__ import annotations
-import argparse, base64, calendar, collections, csv, hashlib, html, io, json, math
-import os, re, secrets, shutil, socket, sqlite3, sys, tempfile, threading, traceback
-import unicodedata, uuid, webbrowser, zipfile, zlib
+import base64, calendar, collections, csv, hashlib, html, hmac, io, json, logging
+import os, re, secrets, sqlite3, sys, tempfile, threading, time, traceback
+import unicodedata, uuid, zipfile, zlib
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse, parse_qs
 
-VERSION = '1.0.0'
+# ESQUEMA DE DATOS
+SQLITE_SCHEMA = "\n        CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);\n        CREATE TABLE IF NOT EXISTS brands(id INTEGER PRIMARY KEY,name TEXT NOT NULL,normalized TEXT UNIQUE NOT NULL,logo BLOB);\n        CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY,code TEXT UNIQUE NOT NULL,brand_id INTEGER NOT NULL REFERENCES brands(id),\n          name TEXT NOT NULL,normalized TEXT NOT NULL,source TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '',created_day TEXT NOT NULL,\n          UNIQUE(brand_id,normalized));\n        CREATE TABLE IF NOT EXISTS documents(id INTEGER PRIMARY KEY,number TEXT UNIQUE,kind TEXT NOT NULL,day TEXT NOT NULL,\n          recipient TEXT NOT NULL DEFAULT '',operator TEXT NOT NULL,note TEXT NOT NULL DEFAULT '',reference TEXT NOT NULL DEFAULT '',\n          request_key TEXT NOT NULL UNIQUE,payload_hash TEXT NOT NULL,input_hash TEXT,related_id INTEGER REFERENCES documents(id),\n          reversed_by INTEGER REFERENCES documents(id),created_at TEXT NOT NULL);\n        CREATE UNIQUE INDEX IF NOT EXISTS import_once ON documents(input_hash) WHERE input_hash IS NOT NULL;\n        CREATE TABLE IF NOT EXISTS lines(id INTEGER PRIMARY KEY,document_id INTEGER NOT NULL REFERENCES documents(id),\n          product_id INTEGER NOT NULL REFERENCES products(id),quantity INTEGER NOT NULL,delta INTEGER NOT NULL,\n          disposition TEXT NOT NULL DEFAULT '');\n        CREATE INDEX IF NOT EXISTS line_product ON lines(product_id);\n        CREATE INDEX IF NOT EXISTS doc_day ON documents(day,id);\n        CREATE TABLE IF NOT EXISTS attachments(id INTEGER PRIMARY KEY,document_id INTEGER NOT NULL REFERENCES documents(id),\n          name TEXT NOT NULL,mime TEXT NOT NULL,sha256 TEXT NOT NULL,data BLOB NOT NULL,created_at TEXT NOT NULL,\n          UNIQUE(document_id,sha256));\n        CREATE TABLE IF NOT EXISTS counts(id INTEGER PRIMARY KEY,document_id INTEGER NOT NULL REFERENCES documents(id),\n          day TEXT NOT NULL,data_json TEXT NOT NULL);\n        CREATE TABLE IF NOT EXISTS closures(month TEXT PRIMARY KEY,data_json TEXT NOT NULL,created_at TEXT NOT NULL,operator TEXT NOT NULL);\n        "
+
+# ALMACENAMIENTO
+_CONFIG: dict[str, Any] = {}
+SCHEMA = 'marketing'
+LOCK_ID = 624093221907
+TABLES = ('meta','brands','products','documents','lines','attachments','counts','closures')
+ID_TABLES = ('brands','products','documents','lines','attachments','counts')
+
+
+def configure(config: dict[str, Any]) -> None:
+    """La configuración es del servidor, nunca proviene de la interfaz HTML."""
+    global _CONFIG
+    cfg = dict(config)
+    if cfg.get('driver') != 'sqlite-test':
+        for key in ('host','dbname','user','password'):
+            if not cfg.get(key):
+                raise ValueError(f'Falta postgres.{key} en los secretos de Streamlit.')
+        cfg['port'] = int(cfg.get('port',5432))
+        cfg['sslmode'] = str(cfg.get('sslmode','require'))
+        if cfg['sslmode'] not in ('require','verify-ca','verify-full'):
+            raise ValueError('La conexión publicada requiere TLS: sslmode=require o verify-full.')
+        cfg['driver'] = 'postgres'
+    _CONFIG = cfg
+
+
+class Row(dict):
+    """Admite columnas por nombre y posición, como las filas del motor original."""
+    def __getitem__(self, key):
+        if isinstance(key,int):
+            return list(self.values())[key]
+        return super().__getitem__(key)
+
+
+def _value(v):
+    if isinstance(v,memoryview): return v.tobytes()
+    if isinstance(v,Decimal):
+        return int(v) if v == v.to_integral_value() else float(v)
+    return v
+
+
+class Cursor:
+    def __init__(self, raw, lastrowid=None):
+        self.raw=raw
+        self.lastrowid=lastrowid
+    def fetchone(self):
+        r=self.raw.fetchone()
+        return None if r is None else Row({k:_value(v) for k,v in dict(r).items()})
+    def fetchall(self):
+        return [Row({k:_value(v) for k,v in dict(r).items()}) for r in self.raw.fetchall()]
+    def __iter__(self):
+        while True:
+            r=self.fetchone()
+            if r is None: return
+            yield r
+
+
+def translate_sql(sql: str) -> tuple[str, bool]:
+    """Transformaciones acotadas al SQL estático de marketing_core.py."""
+    q=sql.strip().rstrip(';')
+    ignored=bool(re.match(r'INSERT\s+OR\s+IGNORE\s+INTO\b',q,re.I))
+    if ignored:
+        q=re.sub(r'INSERT\s+OR\s+IGNORE\s+INTO','INSERT INTO',q,count=1,flags=re.I)
+        q+=' ON CONFLICT DO NOTHING'
+    # No se acepta SQL recibido del navegador; todas las consultas son constantes.
+    q=q.replace('?', '%s')
+    match=re.match(r'INSERT\s+INTO\s+(\w+)\b',q,re.I)
+    returning=bool(match and match[1].lower() in ID_TABLES and not re.search(r'\bRETURNING\b',q,re.I))
+    if returning: q+=' RETURNING id'
+    return q,returning
+
+
+class PGConnection:
+    def __init__(self,raw): self.raw=raw
+    def execute(self,sql,args=()):
+        q,returns=translate_sql(sql)
+        cur=self.raw.execute(q,tuple(args))
+        lid=None
+        if returns:
+            row=cur.fetchone()
+            lid=row['id'] if row else None
+        return Cursor(cur,lid)
+    def executescript(self,script):
+        self.raw.execute('CREATE SCHEMA IF NOT EXISTS marketing')
+        self.raw.execute('REVOKE ALL ON SCHEMA marketing FROM PUBLIC')
+        for stmt in script.split(';'):
+            stmt=stmt.strip()
+            if not stmt: continue
+            stmt=re.sub(r'\bid INTEGER PRIMARY KEY\b','id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY',stmt)
+            stmt=re.sub(r'\bBLOB\b','BYTEA',stmt)
+            self.raw.execute(stmt)
+    def commit(self): self.raw.commit()
+    def rollback(self): self.raw.rollback()
+    def close(self): self.raw.close()
+
+
+class SQLiteTestConnection:
+    def __init__(self,raw): self.raw=raw
+    def execute(self,sql,args=()): return self.raw.execute(sql,args)
+    def executescript(self,script):
+        # sqlite.executescript haría commit: ejecutar cada DDL conserva atomicidad.
+        for stmt in script.split(';'):
+            if stmt.strip(): self.raw.execute(stmt)
+    def commit(self): self.raw.commit()
+    def rollback(self): self.raw.rollback()
+    def close(self): self.raw.close()
+
+
+def _connect():
+    if not _CONFIG: raise RuntimeError('Configura la base externa antes de abrir el almacén.')
+    if _CONFIG.get('driver')=='sqlite-test':
+        c=sqlite3.connect(_CONFIG['path'],timeout=30,isolation_level=None)
+        c.row_factory=sqlite3.Row
+        c.execute('PRAGMA foreign_keys=ON')
+        return SQLiteTestConnection(c)
+    import psycopg
+    from psycopg.rows import dict_row
+    kwargs={k:_CONFIG[k] for k in ('host','port','dbname','user','password','sslmode')}
+    raw=psycopg.connect(**kwargs,connect_timeout=15,autocommit=True,
+                        row_factory=dict_row,prepare_threshold=None,
+                        application_name='MakropetrolMarketing')
+    # El esquema privado no se expone mediante las APIs públicas de Supabase.
+    raw.execute('SET search_path TO marketing, pg_catalog')
+    raw.execute("SET statement_timeout TO '120s'")
+    raw.execute("SET lock_timeout TO '20s'")
+    return PGConnection(raw)
+
+
+@contextmanager
+def transaction():
+    c=_connect()
+    try:
+        if isinstance(c,PGConnection):
+            c.raw.execute('BEGIN')
+            c.raw.execute('SELECT pg_advisory_xact_lock(%s)',(LOCK_ID,))
+        else: c.execute('BEGIN IMMEDIATE')
+        yield c
+        c.commit()
+    except BaseException:
+        c.rollback()
+        raise
+    finally: c.close()
+
+
+@contextmanager
+def reading():
+    c=_connect()
+    try:
+        if isinstance(c,PGConnection): c.raw.execute('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
+        else: c.execute('BEGIN')
+        yield c
+        c.commit()
+    except BaseException:
+        c.rollback()
+        raise
+    finally: c.close()
+
+
+def insert_many(c,table,columns,values):
+    if table not in TABLES: raise ValueError('Tabla no permitida.')
+    if not values: return
+    if not all(re.fullmatch(r'[a-z_]+',x) for x in columns): raise ValueError('Columna inválida.')
+    # Mantiene la cantidad de parámetros bajo el límite de PostgreSQL.
+    size=min(250,max(1,20000//len(columns)))
+    for offset in range(0,len(values),size):
+        block=values[offset:offset+size]
+        sql=f"INSERT INTO {table} ({','.join(columns)}) VALUES "+','.join('('+','.join('?' for _ in columns)+')' for _ in block)
+        args=[v for row in block for v in row]
+        c.execute(sql,args)
+
+
+def reseed_identities(c):
+    if not isinstance(c,PGConnection): return
+    for table in ID_TABLES:
+        # Nombres internos, no entrada del usuario.
+        c.raw.execute(f"SELECT setval(pg_get_serial_sequence('marketing.{table}','id'), COALESCE(MAX(id),1), COUNT(*)>0) FROM marketing.{table}")
+
+
+def export_backup():
+    """Respaldo SQLite completo compatible con la versión local y el migrador."""
+    fd,path=tempfile.mkstemp(suffix='.sqlite3')
+    os.close(fd)
+    dest=sqlite3.connect(path)
+    try:
+        dest.executescript(SQLITE_SCHEMA)
+        dest.execute('PRAGMA foreign_keys=OFF')
+        with reading() as source:
+            for table in TABLES:
+                records=source.execute(f'SELECT * FROM {table}').fetchall()
+                if not records: continue
+                columns=list(dict(records[0]))
+                marks=','.join('?' for _ in columns)
+                dest.executemany(f"INSERT INTO {table} ({','.join(columns)}) VALUES ({marks})",
+                                 [tuple(_value(r[k]) for k in columns) for r in records])
+        dest.commit()
+        if dest.execute('PRAGMA integrity_check').fetchone()[0]!='ok':
+            raise RuntimeError('No se pudo verificar el respaldo.')
+        if dest.execute('PRAGMA foreign_key_check').fetchall():
+            raise RuntimeError('El respaldo contiene referencias inconsistentes.')
+        dest.close()
+        out=io.BytesIO()
+        with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
+            z.write(path,'marketing.sqlite3')
+            z.writestr('RESTAURAR.txt',
+                'Respaldo completo de Makropetrol Marketing. Contiene inventario, movimientos, firmas, logos y cierres.\n'
+                'Guárdalo fuera de Streamlit y del repositorio. Contiene información interna.\n'
+                'Para recuperar en una base PostgreSQL NUEVA y vacía: configura sus secretos y ejecuta\n'
+                'Consulta la guía antes de restaurar: la función migrate_sqlite() solo admite una base destino vacía.\n'
+                'El migrador se niega a sobrescribir bases con datos. No restaura sobre la base activa.\n'
+                'En la versión local v1 puede usarse como datos_marketing/marketing.sqlite3, con la app cerrada.\n')
+        return out.getvalue()
+    finally:
+        try: dest.close()
+        except Exception: pass
+        Path(path).unlink(missing_ok=True)
+
+
+def migrate_sqlite(source_path):
+    """Importa una base local SOLO a una base externa vacía; no suma inventarios."""
+    path=Path(source_path).resolve()
+    if not path.is_file(): raise ValueError('No existe el archivo SQLite indicado.')
+    src=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
+    src.row_factory=sqlite3.Row
+    try:
+        if src.execute('PRAGMA integrity_check').fetchone()[0]!='ok': raise ValueError('El archivo de origen no pasó la verificación.')
+        if src.execute('PRAGMA foreign_key_check').fetchall(): raise ValueError('Hay referencias inconsistentes en el origen.')
+        metadata=dict(src.execute('SELECT key,value FROM meta').fetchall())
+        if metadata.get('schema')!='1' or metadata.get('seeded')!='1': raise ValueError('No es una base de Marketing compatible.')
+        data={table:[dict(r) for r in src.execute(f'SELECT * FROM {table}')] for table in TABLES}
+    finally: src.close()
+    with transaction() as c:
+        c.executescript(SQLITE_SCHEMA)
+        for table in TABLES:
+            if c.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:
+                raise ValueError('La base destino ya tiene datos. Migración cancelada: usa un proyecto/base nueva y vacía.')
+        for table in TABLES:
+            records=data[table]
+            if not records: continue
+            columns=list(records[0])
+            if table=='documents':
+                # Referencias a anulaciones futuras se restauran después de insertar todos los documentos.
+                saved=[(r['id'],r['related_id'],r['reversed_by']) for r in records]
+                records=[{**r,'related_id':None,'reversed_by':None} for r in records]
+            insert_many(c,table,columns,[tuple(r[k] for k in columns) for r in records])
+            if table=='documents':
+                for did,related,reversed_by in saved:
+                    if related or reversed_by:
+                        c.execute('UPDATE documents SET related_id=?,reversed_by=? WHERE id=?',(related,reversed_by,did))
+        reseed_identities(c)
+    return {'products':len(data['products']),'documents':len(data['documents']),'attachments':len(data['attachments'])}
+
+# MOTOR DE INVENTARIO Y REPORTES
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+VERSION = '1.2.0-streamlit-unico'
 OPENING_DAY = '2026-10-30'
 SOURCE_NAME = 'INVENTARIOS MARCAS30-10.xlsx'
 SEED_B64 = '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'
@@ -65,32 +327,11 @@ def integer(v, *, zero=False, signed=False):
     if not zero and n==0: raise AppError('La cantidad debe ser mayor que cero.')
     return n
 
-def connect():
-    c=sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
-    c.row_factory=sqlite3.Row
-    c.execute('PRAGMA foreign_keys=ON')
-    c.execute('PRAGMA busy_timeout=30000')
-    return c
 
-@contextmanager
-def transaction():
-    with LOCK:
-        c=connect()
-        try:
-            c.execute('BEGIN IMMEDIATE')
-            yield c
-            c.commit()
-        except BaseException:
-            c.rollback()
-            raise
-        finally: c.close()
 
-@contextmanager
-def reading():
-    with LOCK:
-        c=connect()
-        try: yield c
-        finally: c.close()
+
+
+
 
 def rows(c, sql, args=()): return [dict(r) for r in c.execute(sql,args).fetchall()]
 def meta(c,key,default=''):
@@ -106,68 +347,39 @@ def qty(c,pid):
     return c.execute('SELECT COALESCE(SUM(delta),0) FROM lines WHERE product_id=?',(pid,)).fetchone()[0]
 
 def init_db():
-    DATA_DIR.mkdir(parents=True,exist_ok=True)
+    """Crea el esquema y carga la apertura UNA sola vez, en una transacción."""
     with transaction() as c:
-        c.executescript('''
-        CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS brands(id INTEGER PRIMARY KEY,name TEXT NOT NULL,normalized TEXT UNIQUE NOT NULL,logo BLOB);
-        CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY,code TEXT UNIQUE NOT NULL,brand_id INTEGER NOT NULL REFERENCES brands(id),
-          name TEXT NOT NULL,normalized TEXT NOT NULL,source TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '',created_day TEXT NOT NULL,
-          UNIQUE(brand_id,normalized));
-        CREATE TABLE IF NOT EXISTS documents(id INTEGER PRIMARY KEY,number TEXT UNIQUE,kind TEXT NOT NULL,day TEXT NOT NULL,
-          recipient TEXT NOT NULL DEFAULT '',operator TEXT NOT NULL,note TEXT NOT NULL DEFAULT '',reference TEXT NOT NULL DEFAULT '',
-          request_key TEXT NOT NULL UNIQUE,payload_hash TEXT NOT NULL,input_hash TEXT,related_id INTEGER REFERENCES documents(id),
-          reversed_by INTEGER REFERENCES documents(id),created_at TEXT NOT NULL);
-        CREATE UNIQUE INDEX IF NOT EXISTS import_once ON documents(input_hash) WHERE input_hash IS NOT NULL;
-        CREATE TABLE IF NOT EXISTS lines(id INTEGER PRIMARY KEY,document_id INTEGER NOT NULL REFERENCES documents(id),
-          product_id INTEGER NOT NULL REFERENCES products(id),quantity INTEGER NOT NULL,delta INTEGER NOT NULL,
-          disposition TEXT NOT NULL DEFAULT '');
-        CREATE INDEX IF NOT EXISTS line_product ON lines(product_id);
-        CREATE INDEX IF NOT EXISTS doc_day ON documents(day,id);
-        CREATE TABLE IF NOT EXISTS attachments(id INTEGER PRIMARY KEY,document_id INTEGER NOT NULL REFERENCES documents(id),
-          name TEXT NOT NULL,mime TEXT NOT NULL,sha256 TEXT NOT NULL,data BLOB NOT NULL,created_at TEXT NOT NULL,
-          UNIQUE(document_id,sha256));
-        CREATE TABLE IF NOT EXISTS counts(id INTEGER PRIMARY KEY,document_id INTEGER NOT NULL REFERENCES documents(id),
-          day TEXT NOT NULL,data_json TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS closures(month TEXT PRIMARY KEY,data_json TEXT NOT NULL,created_at TEXT NOT NULL,operator TEXT NOT NULL);
-        ''')
-        # executescript puede cerrar la transacción; iniciar otra para la carga atómica.
-        if not c.in_transaction: c.execute('BEGIN IMMEDIATE')
-        schema=meta(c,'schema')
-        if schema and schema!='1': raise AppError('Esta base pertenece a otra versión. No se modificó.')
-        if not meta(c,'seeded'):
-            if c.execute('SELECT COUNT(*) FROM products').fetchone()[0]:
-                raise AppError('Hay un catálogo sin marcador de apertura. Recupera el respaldo; no se recargó inventario.')
-            seed=json.loads(zlib.decompress(base64.b64decode(SEED_B64)))
-            doc=c.execute('''INSERT INTO documents(kind,day,operator,note,request_key,payload_hash,created_at)
-                VALUES ('APERTURA',?,'Inventario físico inicial',?,'apertura-v1','seed',?)''',
-                (OPENING_DAY,'Conteo confirmado por Angeluis. Blancos y guiones = agotado. No se importan movimientos históricos.',now_iso())).lastrowid
-            c.execute('UPDATE documents SET number=? WHERE id=?',(f'AP-{doc:06}',doc))
-            counted=[]
-            for p in seed:
-                c.execute('INSERT OR IGNORE INTO brands(name,normalized) VALUES (?,?)',(p['brand'],norm(p['brand'])))
-                bid=c.execute('SELECT id FROM brands WHERE normalized=?',(norm(p['brand']),)).fetchone()[0]
-                pid=c.execute('''INSERT INTO products(code,brand_id,name,normalized,source,note,created_day)
-                   VALUES (?,?,?,?,?,?,?)''',(p['code'],bid,p['name'],norm(p['name']),p['source'],p['note'],OPENING_DAY)).lastrowid
-                c.execute('INSERT INTO lines(document_id,product_id,quantity,delta) VALUES (?,?,?,?)',(doc,pid,p['qty'],p['qty']))
-                counted.append({'id':pid,'code':p['code'],'brand':p['brand'],'name':p['name'],'expected':p['qty'],'counted':p['qty'],'difference':0})
-            c.execute('INSERT INTO counts(document_id,day,data_json) VALUES (?,?,?)',(doc,OPENING_DAY,json.dumps(counted,ensure_ascii=False)))
-            for k,v in [('seeded','1'),('schema','1'),('revision','1'),('opening_day',OPENING_DAY),('app_version',VERSION),('source',SOURCE_NAME)]: put_meta(c,k,v)
-    daily_backup()
+        c.executescript(SQLITE_SCHEMA)
+        if meta(c, 'schema') not in ('', '1'):
+            raise AppError('La base usa otra versión. No se modificó el inventario.')
+        if meta(c, 'seeded'):
+            return
+        if c.execute('SELECT COUNT(*) FROM products').fetchone()[0]:
+            raise AppError('Hay productos sin marcador de apertura; no se recargó el inventario.')
+        seed=json.loads(zlib.decompress(base64.b64decode(SEED_B64)))
+        did=c.execute("""INSERT INTO documents(kind,day,operator,note,request_key,payload_hash,created_at)
+            VALUES ('APERTURA',?,'Inventario físico inicial',?,'apertura-v1','seed',?)""",
+            (OPENING_DAY,'Conteo confirmado. Blancos y guiones = agotado. Apertura única.',now_iso())).lastrowid
+        c.execute('UPDATE documents SET number=? WHERE id=?',(f'AP-{did:06}',did))
+        brand_ids={b:i+1 for i,b in enumerate(dict.fromkeys(p['brand'] for p in seed))}
+        insert_many(c, 'brands', ['id','name','normalized'],
+                    [(i,b,norm(b)) for b,i in brand_ids.items()])
+        insert_many(c, 'products', ['id','code','brand_id','name','normalized','source','note','created_day'],
+                    [(i,p['code'],brand_ids[p['brand']],p['name'],norm(p['name']),p['source'],p['note'],OPENING_DAY)
+                     for i,p in enumerate(seed,1)])
+        insert_many(c, 'lines', ['document_id','product_id','quantity','delta'],
+                    [(did,i,p['qty'],p['qty']) for i,p in enumerate(seed,1)])
+        counted=[{'id':i,'code':p['code'],'brand':p['brand'],'name':p['name'],'expected':p['qty'],
+                  'counted':p['qty'],'difference':0} for i,p in enumerate(seed,1)]
+        c.execute('INSERT INTO counts(document_id,day,data_json) VALUES (?,?,?)',
+                  (did,OPENING_DAY,json.dumps(counted,ensure_ascii=False)))
+        for k,v in [('seeded','1'),('schema','1'),('revision','1'),('opening_day',OPENING_DAY),
+                    ('app_version',VERSION),('source',SOURCE_NAME)]:
+            put_meta(c,k,v)
+        reseed_identities(c)
 
-def daily_backup():
-    dest=DATA_DIR/'respaldos'
-    dest.mkdir(exist_ok=True)
-    p=dest/f'marketing_{today().isoformat()}.sqlite3'
-    if not p.exists():
-        with LOCK:
-            tmp=dest/f'.respaldo-{uuid.uuid4().hex}.tmp'
-            src=connect(); out=sqlite3.connect(tmp)
-            try: src.backup(out)
-            finally: out.close();src.close()
-            os.replace(tmp,p)
-        older=sorted(dest.glob('marketing_*.sqlite3'))[:-14]
-        for old in older: old.unlink(missing_ok=True)
+
+
 
 def check_day(c,value):
     if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',str(value)): raise AppError('Usa una fecha con formato AAAA-MM-DD.')
@@ -248,7 +460,7 @@ def submit_movement(data):
 def product_list(c):
     return rows(c,'''SELECT p.id,p.code,p.name,b.id AS brand_id,b.name AS brand,p.source,p.note,p.created_day,
        COALESCE(SUM(l.delta),0) AS stock FROM products p JOIN brands b ON b.id=p.brand_id
-       LEFT JOIN lines l ON l.product_id=p.id GROUP BY p.id ORDER BY b.name,p.name''')
+       LEFT JOIN lines l ON l.product_id=p.id GROUP BY p.id,b.id ORDER BY b.name,p.name''')
 
 def event_lines(c,eid,until=None):
     e=c.execute('SELECT * FROM documents WHERE id=?',(eid,)).fetchone()
@@ -256,7 +468,7 @@ def event_lines(c,eid,until=None):
         raise AppError('La salida de evento no está disponible.')
     result=rows(c,'''SELECT p.id AS product_id,p.code,p.name,b.name AS brand,SUM(l.quantity) AS dispatched
       FROM lines l JOIN products p ON p.id=l.product_id JOIN brands b ON b.id=p.brand_id
-      WHERE l.document_id=? GROUP BY p.id ORDER BY p.code''',(eid,))
+      WHERE l.document_id=? GROUP BY p.id,b.id ORDER BY p.code''',(eid,))
     for item in result:
         a=c.execute('''SELECT COALESCE(SUM(l.quantity),0),COALESCE(SUM(l.delta),0)
           FROM lines l JOIN documents d ON d.id=l.document_id
@@ -352,7 +564,7 @@ def snapshot():
             'closures':rows(c,'SELECT month,operator,created_at FROM closures ORDER BY month DESC'),
             'operators':[r[0] for r in c.execute("SELECT DISTINCT operator FROM documents WHERE kind!='APERTURA' ORDER BY operator")],
             'recipients':[r[0] for r in c.execute("SELECT DISTINCT recipient FROM documents WHERE recipient!='' ORDER BY recipient")],
-            'data_path':str(DATA_DIR),'last_count':dict(c.execute('SELECT document_id,day FROM counts ORDER BY id DESC LIMIT 1').fetchone())}
+            'data_path':'Base PostgreSQL externa · esquema marketing','last_count':dict(c.execute('SELECT document_id,day FROM counts ORDER BY id DESC LIMIT 1').fetchone())}
 
 def save_count(data):
     key=validate_key(data.get('key'));payload=fingerprint(data)
@@ -579,18 +791,9 @@ def get_logo(brand_id=None):
         return base64.b64decode(b) if b else None
 
 def backup_zip():
-    with LOCK:
-        fd,p=tempfile.mkstemp(suffix='.sqlite3');os.close(fd)
-        src=connect();dest=sqlite3.connect(p)
-        try:src.backup(dest)
-        finally:dest.close();src.close()
-        out=io.BytesIO()
-        try:
-            with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
-                z.write(p,'marketing.sqlite3')
-                z.writestr('RESTAURAR.txt','Cierra la app. Conserva una copia de datos_marketing.\nReemplaza datos_marketing/marketing.sqlite3 con este archivo y abre la app.\nEl respaldo incluye inventario, movimientos, firmas adjuntas, logos y cierres.\nNo mezcles dos bases ni copies con la app abierta.\n')
-        finally:os.unlink(p)
-    return out.getvalue()
+    """Exportación consistente y portable; no depende del disco de Streamlit."""
+    return export_backup()
+
 
 
 # ---------------------------------------------------------------------------
@@ -802,7 +1005,77 @@ def all_reports_zip(month):
         z.writestr('LEEME.txt','El ZIP es para uso interno. Envía a cada proveedor únicamente sus dos archivos de PROVEEDORES.\nNo envíes el ZIP completo a un proveedor.\n')
     return out.getvalue()
 
-HTML = r"""
+
+# MENSAJES DEL COMPONENTE
+logger=logging.getLogger('marketing')
+POST_ROUTES={
+    '/api/movement':submit_movement,'/api/resolve':submit_resolution,
+    '/api/cancel':cancel_document,'/api/product':add_product,
+    '/api/count':save_count,'/api/close-month':close_month,
+    '/api/import':import_rows,'/api/attach':attach_file,'/api/logo':save_logo,
+}
+
+
+def dispatch(request):
+    rid=str(request.get('id',''))
+    if not re.fullmatch(r'[a-zA-Z0-9-]{12,80}',rid):
+        return {'id':rid,'status':400,'body':{'error':'Identificador de solicitud inválido.'}}
+    def result(body,status=200,mime='application/json; charset=utf-8',filename=None):
+        headers={'Content-Type':mime,'Cache-Control':'no-store'}
+        if filename:
+            safe=re.sub(r'[^A-Za-z0-9_.-]','_',filename)
+            headers['Content-Disposition']=f'attachment; filename="{safe}"'
+        if isinstance(body,(bytes,bytearray,memoryview)):
+            return {'id':rid,'status':status,'headers':headers,'encoding':'base64','body':base64.b64encode(body).decode()}
+        return {'id':rid,'status':status,'headers':headers,'body':body}
+    try:
+        raw_path=str(request.get('path',''))
+        if len(raw_path)>2048: raise AppError('Ruta demasiado larga.')
+        url=urlparse(raw_path)
+        if url.scheme or url.netloc: raise AppError('Ruta no permitida.')
+        path=url.path
+        q={k:v[0] for k,v in parse_qs(url.query).items()}
+        method=request.get('method','GET')
+        if method=='POST':
+            data=request.get('data')
+            if path not in POST_ROUTES: return result({'error':'Acción no disponible.'},404)
+            if not isinstance(data,dict): raise AppError('Solicitud inválida.')
+            if len(json.dumps(data))>MAX_UPLOAD*2: raise AppError('El archivo supera el tamaño permitido.')
+            return result(POST_ROUTES[path](data))
+        if method!='GET': raise AppError('Método no permitido.')
+        if path=='/api/state': return result(snapshot())
+        if path=='/api/document': return result(document_data(integer(q.get('id'))))
+        if path=='/api/receipt':
+            doc=document_data(integer(q.get('id')))
+            return result(receipt_pdf(doc),mime='application/pdf',filename=doc['number']+'.pdf')
+        if path in ('/api/report','/api/report-file'):
+            with reading() as c:r=filtered_report(report_data(c,q.get('month','')),q.get('brand'))
+            if path=='/api/report': return result(r)
+            name=re.sub('[^A-Za-z0-9_-]','_',r['scope'])+'_'+r['month']
+            if q.get('format')=='pdf': return result(monthly_pdf(r),mime='application/pdf',filename=name+'.pdf')
+            return result(xlsx_report(r),mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',filename=name+'.xlsx')
+        if path=='/api/all-reports':
+            return result(all_reports_zip(q.get('month','')),mime='application/zip',filename='Reportes_marketing_'+q.get('month','')+'.zip')
+        if path=='/api/template':
+            return result(excel_template(q.get('mode','movement')),mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',filename='Plantilla_marketing.xlsx')
+        if path=='/api/backup': return result(backup_zip(),mime='application/zip',filename='Respaldo_marketing_'+today().isoformat()+'.zip')
+        if path=='/api/attachment':
+            with reading() as c:
+                r=c.execute('SELECT name,mime,data FROM attachments WHERE id=?',(integer(q.get('id')),)).fetchone()
+            if not r: raise AppError('Adjunto no encontrado.')
+            return result(r['data'],mime=r['mime'],filename=r['name'])
+        return result({'error':'Ruta no encontrada.'},404)
+    except AppError as exc:
+        return result({'error':str(exc)},400)
+    except ImportError:
+        return result({'error':'Falta una dependencia. Revisa requirements.txt y los registros de Streamlit.'},500)
+    except Exception as exc:
+        # No devolver datos de conexión, credenciales, SQL ni fichas al navegador/log.
+        logger.error('Acción fallida (%s); solicitud %s',type(exc).__name__,rid)
+        return result({'error':'No se pudo completar la operación con la base externa. Revisa su disponibilidad y consulta Movimientos antes de repetir una entrega. No se utilizó un inventario local alternativo.'},503)
+
+# INTERFAZ INCLUIDA; NO SE SUBEN CARPETAS ADICIONALES
+FRONTEND_HTML = r"""
 <!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Marketing · Makropetrol</title>
 <style>
 :root{--ink:#302340;--muted:#81728f;--purple:#7755b7;--plum:#543479;--lav:#eee6fa;--pink:#f4dfeb;--bg:#f7f5fa;--line:#e9e1ef;--good:#317968;--red:#ae4b69;--shadow:0 12px 38px #5e3e8710;--radius:22px}
@@ -815,13 +1088,14 @@ main{margin-left:232px;padding:28px 40px 60px;max-width:1700px}.topbar{display:f
 @media(max-width:1100px){.side{width:195px;padding:25px 14px}main{margin-left:195px;padding:25px}.stats{gap:10px}.stat{padding:17px}.hero-art{margin-right:0}.twocol{grid-template-columns:1fr}.hero h1{font-size:30px}}
 @media(max-width:760px){.side{position:static;width:100%;padding:15px}.brand{margin-bottom:15px}.navgroup{display:flex;overflow-x:auto}.navbtn{padding:10px;white-space:nowrap}.navbtn .ico,.sidefoot{display:none}main{margin:0;padding:20px 15px}.topbar{margin-bottom:18px}.stats{grid-template-columns:repeat(2,1fr)}.hero{padding:25px}.hero-art{display:none}.headrow{align-items:flex-start;flex-direction:column}.formgrid{grid-template-columns:1fr}.full{grid-column:auto}.overlay{padding:9px}.modalbody,.modalhead{padding:18px}.addline{grid-template-columns:1fr 80px}.addline .btn{grid-column:1/-1}.hero h1{font-size:29px}.pill.time{display:none}.eventcard{flex-direction:column;align-items:flex-start}.modalfoot{padding:14px}.topbar .btn{padding:8px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{transition:none!important;animation:none!important}}
-</style></head><body>
-<aside class="side"><div class="brand"><div class="brand-icon">MP</div><div><strong>Marketing</strong><div class="eyebrow" style="margin-top:5px">Makropetrol</div></div></div><div class="navgroup" id="nav"></div><div class="sidefoot"><div class="eyebrow">Un solo almacén</div><b>Matriz Makropetrol</b><div class="small">Todo queda guardado en esta PC. Descarga respaldos periódicamente.</div><button class="btn sm soft" style="margin-top:12px;width:100%" onclick="download('/api/backup')">Descargar respaldo</button></div></aside>
-<main><div class="topbar"><div class="crumb">Marketing <span style="padding:0 8px">/</span> <b id="crumb">Inicio</b></div><div class="actions"><span class="pill time" id="datepill"></span><span class="pill"><span class="dot"></span>Almacén local</span><button class="btn sm" onclick="refresh()" title="Actualizar datos">↻ Actualizar</button></div></div><div id="content"><div class="loading"><div><div class="loader"></div><p>Abriendo tu almacén…</p></div></div></div></main>
+html,body{height:100%;overflow-y:auto} main{min-height:100vh} @media(min-width:761px){.side{height:100vh}} </style></head><body><noscript><p>Activa JavaScript para utilizar el almacén.</p></noscript>
+<aside class="side"><div class="brand"><div class="brand-icon">MP</div><div><strong>Marketing</strong><div class="eyebrow" style="margin-top:5px">Makropetrol</div></div></div><div class="navgroup" id="nav"></div><div class="sidefoot"><div class="eyebrow">Un solo almacén</div><b>Matriz Makropetrol</b><div class="small">Inventario y fichas guardados en la base externa. Descarga respaldos periódicamente.</div><button class="btn sm soft" style="margin-top:12px;width:100%" onclick="download('/api/backup')">Descargar respaldo</button></div></aside>
+<main><div class="topbar"><div class="crumb">Marketing <span style="padding:0 8px">/</span> <b id="crumb">Inicio</b></div><div class="actions"><span class="pill time" id="datepill"></span><span class="pill"><span class="dot"></span>Almacén en la nube</span><button class="btn sm" onclick="refresh()" title="Actualizar datos">↻ Actualizar</button></div></div><div id="content"><div class="loading"><div><div class="loader"></div><p>Abriendo tu almacén…</p></div></div></div></main>
 <div id="modalroot"></div><div id="toastroot"></div>
-<script nonce="__TOKEN__">
+<script src="bridge.js"></script>
+<script>
 'use strict';
-const TOKEN='__TOKEN__';let S=null,page='home',cart=[],moveKind='',moveKey='',importHash=null,countDraft={},countRevision=0,countProducts=[],countKey='',report=null;
+const TOKEN='streamlit-component';let S=null,page='home',cart=[],moveKind='',moveKey='',importHash=null,countDraft={},countRevision=0,countProducts=[],countKey='',report=null;
 const $=id=>document.getElementById(id);const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=n=>Number(n||0).toLocaleString('es-VE');const clean=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
 const key=()=>crypto.randomUUID();const datefmt=s=>s?new Date(s+'T12:00:00').toLocaleDateString('es-VE',{day:'2-digit',month:'short',year:'numeric'}):'';
@@ -829,9 +1103,9 @@ const iconPaths={home:'<path d="m3 10 9-7 9 7v10H3z"/><path d="M9 20v-8h6v8"/>',
 const ico=n=>`<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[n]||iconPaths.box}</svg>`;
 const labels={APERTURA:'Apertura',ENTRADA:'Recepción',ENTREGA:'Entrega a asesor',EVENTO:'Salida para evento',PRESTAMO:'Préstamo',LIQUIDACION:'Regreso / cierre',AJUSTE:'Conteo / ajuste',ANULACION:'Anulación'};
 const navItems=[['home','Inicio','home'],['inventory','Inventario','box'],['history','Movimientos','file'],['events','Eventos y préstamos','calendar'],['reports','Cierre y reportes','chart'],['settings','Ayuda y ajustes','settings']];
-async function api(url,data){const res=await fetch(url,{method:data===undefined?'GET':'POST',headers:{'X-App-Token':TOKEN,...(data===undefined?{}:{'Content-Type':'application/json'})},...(data===undefined?{}:{body:JSON.stringify(data)})});let v;try{v=await res.json()}catch{throw Error('La app no respondió. Comprueba que la ventana de Python siga abierta.')}if(!res.ok||v.error)throw Error(v.error||'No se pudo completar la operación.');return v}
+async function api(url,data){const res=await window.marketingBridgeFetch(url,{method:data===undefined?'GET':'POST',headers:{'X-App-Token':TOKEN,...(data===undefined?{}:{'Content-Type':'application/json'})},...(data===undefined?{}:{body:JSON.stringify(data)})});let v;try{v=await res.json()}catch{throw Error('La app no respondió. Comprueba tu conexión y vuelve a iniciar sesión si es necesario.')}if(!res.ok||v.error)throw Error(v.error||'No se pudo completar la operación.');return v}
 function toast(t,err=false){$('toastroot').innerHTML=`<div class="toast ${err?'err':''}" role="status">${esc(t)}</div>`;setTimeout(()=>{$('toastroot').innerHTML=''},6500)}
-async function download(url){try{toast('Preparando el archivo…');const res=await fetch(url,{headers:{'X-App-Token':TOKEN}});if(!res.ok){const x=await res.json();throw Error(x.error)}const blob=await res.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);const name=(res.headers.get('Content-Disposition')||'').match(/filename="([^"]+)"/);a.download=name?name[1]:'marketing.zip';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),30000);toast('Archivo preparado. Revisa tus descargas.')}catch(e){toast(e.message,true)}}
+async function download(url){try{toast('Preparando el archivo…');const res=await window.marketingBridgeFetch(url,{headers:{'X-App-Token':TOKEN}});if(!res.ok){const x=await res.json();throw Error(x.error)}const blob=await res.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);const name=(res.headers.get('Content-Disposition')||'').match(/filename="([^"]+)"/);a.download=name?name[1]:'marketing.zip';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),30000);toast('Archivo preparado. Revisa tus descargas.')}catch(e){toast(e.message,true)}}
 async function refresh(){try{S=await api('/api/state');$('datepill').textContent=datefmt(S.today);render()}catch(e){$('content').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
 function go(p){page=p;render()}
 function render(){$('nav').innerHTML=navItems.map(([id,t,i])=>`<button class="navbtn ${id===page?'active':''}" onclick="go('${id}')">${ico(i)}${t}</button>`).join('');$('crumb').textContent=navItems.find(x=>x[0]===page)?.[1]||'';({home:home,inventory:inventory,history:history,events:events,reports:reports,settings:settings}[page]||home)()}
@@ -892,120 +1166,235 @@ async function importCount(file){try{const r=await api('/api/import',{...await r
 function saveCountDraft(){const cs=v=>'"'+String(v??'').replace(/"/g,'""')+'"';let content='\ufeffCodigo;Marca;Articulo;Contado\r\n'+countProducts.map(p=>[p.code,p.brand,p.name,countDraft[p.id]??''].map(cs).join(';')).join('\r\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([content],{type:'text/csv;charset=utf-8'}));a.download='Borrador_conteo.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
 async function submitCount(e){e.preventDefault();$('countSave').disabled=true;try{const r=await api('/api/count',{key:countKey,revision:countRevision,day:$('cDay').value,operator:$('cOperator').value,note:$('cNote').value,items:countProducts.map(p=>({product_id:p.id,counted:countDraft[p.id]??null}))});closeModal();await refresh();await showDocument(r.id);toast('Conteo completo guardado con su historial de diferencias.')}catch(er){modalError(er)}finally{if($('countSave'))$('countSave').disabled=false}}
 function settings(){$('content').innerHTML=header('Ayuda y ajustes','Lo esencial para usar la app sin complicaciones.')+`<div class="twocol"><div class="card"><h2>Cuatro pasos para empezar</h2><div class="notice"><b>1.</b> Consulta el inventario: el conteo inicial ya está cargado.<br><b>2.</b> Recibe mercancía para sumar nuevas existencias.<br><b>3.</b> Confirma entregas y descarga las fichas para firmar.<br><b>4.</b> Haz el conteo y descarga los reportes mensuales.</div><h2 style="margin-top:24px">Las planillas firmadas</h2><p class="small" style="line-height:1.8">La ficha incluida es un formato inicial con espacio para las firmas. El formato oficial pendiente se podrá adaptar después. Una foto o PDF firmado se adjunta como respaldo; no se interpreta como una nueva salida.</p><h2 style="margin-top:24px">Importaciones</h2><p class="small" style="line-height:1.8">Usa la plantilla con columnas Código, Marca, Artículo y Cantidad. Para un artículo nuevo, créalo primero. No cargues otra vez el inventario comparativo inicial como si fuera una recepción.</p><button class="btn soft" onclick="download('/api/template?mode=movement')">Descargar plantilla de movimientos</button></div>
-<div><div class="card"><h2>Logos en los reportes</h2><p class="small" style="line-height:1.8">Elige la empresa o una marca y carga su logo. Solo se utilizará en sus fichas o reportes correspondientes.</p><div class="field"><label>Destino del logo</label><select id="logoBrand"><option value="0">Makropetrol · fichas y gerencia</option>${brandOptions(false)}</select></div><div class="dropzone" style="margin-top:15px">Logo en PNG o JPG<input type="file" accept=".png,.jpg,.jpeg" onchange="uploadLogo(this.files[0])"></div><div id="logoMessage"></div></div><div class="card"><h2>Datos y respaldo</h2><p class="small">La base, los logos, las firmas y los cierres están guardados aquí:</p><div class="path">${esc(S.data_path)}</div><p class="small" style="line-height:1.8">No borres esta carpeta al actualizar el script. La app guarda un respaldo local al abrirse cada día (hasta 14). Un respaldo en la misma PC no protege si se daña el disco: descarga una copia y guárdala en otro lugar.</p><button class="btn primary" onclick="download('/api/backup')">Descargar respaldo completo</button></div></div></div><div class="card"><h2>Información de esta versión</h2><p class="small" style="line-height:1.8">Versión ${S.version} · Almacén único · Solo cantidades de artículos completos · Sin integración con A2 ni envío automático de correos.<br>El servidor escucha únicamente en esta PC. No expongas su puerto a Internet. Al cerrar la ventana de Python, la app deja de atender, pero los datos permanecen guardados.<br>Las dos referencias OILSTONE de 18 herramientas se conservan separadas. ULTRALUB permanece como referencia histórica en cero, sin copiar su antiguo saldo.</p></div>`}
+<div><div class="card"><h2>Logos en los reportes</h2><p class="small" style="line-height:1.8">Elige la empresa o una marca y carga su logo. Solo se utilizará en sus fichas o reportes correspondientes.</p><div class="field"><label>Destino del logo</label><select id="logoBrand"><option value="0">Makropetrol · fichas y gerencia</option>${brandOptions(false)}</select></div><div class="dropzone" style="margin-top:15px">Logo en PNG o JPG<input type="file" accept=".png,.jpg,.jpeg" onchange="uploadLogo(this.files[0])"></div><div id="logoMessage"></div></div><div class="card"><h2>Datos y respaldo</h2><p class="small">La base, los logos, las firmas y los cierres están guardados aquí:</p><div class="path">${esc(S.data_path)}</div><p class="small" style="line-height:1.8">Los datos no se guardan en el disco temporal de Streamlit ni en GitHub. Actualizar el código no vuelve a cargar la apertura. Descarga respaldos y conserva copias fuera de la app; configura también las copias de tu proveedor de base de datos.</p><button class="btn primary" onclick="download('/api/backup')">Descargar respaldo completo</button></div></div></div><div class="card"><h2>Información de esta versión</h2><p class="small" style="line-height:1.8">Versión ${S.version} · Almacén único · Solo cantidades de artículos completos · Sin integración con A2 ni envío automático de correos.<br>Esta versión se ejecuta en Streamlit y utiliza una base PostgreSQL externa. No requiere mantener encendida la PC. Si la conexión falla, no trabaja con una copia local ni simula que guardó el movimiento.<br>Las dos referencias OILSTONE de 18 herramientas se conservan separadas. ULTRALUB permanece como referencia histórica en cero, sin copiar su antiguo saldo.</p></div>`}
 async function uploadLogo(file){try{await api('/api/logo',{...await readFile(file),brand_id:$('logoBrand').value});$('logoMessage').innerHTML='<div class="success">Logo guardado para ese destinatario.</div>'}catch(e){$('logoMessage').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
 refresh();
 </script></body></html>
 
 """
 
-class Handler(BaseHTTPRequestHandler):
-    server_version='MarketingLocal/1.0'
-    def log_message(self,fmt,*args):
-        # No imprimir nombres de asesores o cuerpos de solicitudes en la consola.
-        if '/api/' not in str(args[:1]):super().log_message(fmt,*args)
-    def common(self):
-        self.send_header('Cache-Control','no-store')
-        self.send_header('X-Content-Type-Options','nosniff')
-        self.send_header('Referrer-Policy','no-referrer')
-        self.send_header('X-Frame-Options','DENY')
-    def respond(self,body,status=200,mime='application/json; charset=utf-8',filename=None):
-        if isinstance(body,dict):body=json.dumps(body,ensure_ascii=False).encode('utf-8')
-        if isinstance(body,str):body=body.encode('utf-8')
-        self.send_response(status);self.common();self.send_header('Content-Type',mime)
-        if mime.startswith('text/html'):
-            # Los atributos onclick de la interfaz requieren unsafe-inline. No se carga código externo.
-            self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'")
-        if filename:
-            filename=re.sub('[^A-Za-z0-9_.-]','_',filename)
-            self.send_header('Content-Disposition',f'attachment; filename="{filename}"')
-        self.send_header('Content-Length',str(len(body)));self.end_headers()
-        try:self.wfile.write(body)
-        except (BrokenPipeError,ConnectionResetError):pass
-    def authorized(self,api_route=False):
-        port=self.server.server_address[1]
-        hosts={f'127.0.0.1:{port}',f'localhost:{port}'}
-        if self.headers.get('Host','') not in hosts:raise AppError('Acceso permitido solo desde esta PC.')
-        origin=self.headers.get('Origin')
-        if origin and origin not in {f'http://{h}' for h in hosts}:raise AppError('Origen de la solicitud no permitido.')
-        if api_route and not secrets.compare_digest(self.headers.get('X-App-Token',''),TOKEN):raise AppError('Sesión inválida. Recarga la página de la app.')
-    def do_GET(self):
-        try:
-            u=urlparse(self.path);p=u.path;q={k:v[0] for k,v in parse_qs(u.query).items()}
-            self.authorized(p.startswith('/api/'))
-            if p=='/':self.respond(HTML.replace('__TOKEN__',TOKEN),mime='text/html; charset=utf-8');return
-            if p=='/favicon.ico':self.respond(b'',204,mime='image/x-icon');return
-            if p=='/api/state':self.respond(snapshot());return
-            if p=='/api/document':self.respond(document_data(integer(q.get('id'))));return
-            if p=='/api/receipt':
-                d=document_data(integer(q.get('id')));self.respond(receipt_pdf(d),mime='application/pdf',filename=d['number']+'.pdf');return
-            if p in ('/api/report','/api/report-file'):
-                with reading() as c:r=filtered_report(report_data(c,q.get('month','')),q.get('brand'))
-                if p=='/api/report':self.respond(r);return
-                name=re.sub('[^A-Za-z0-9_-]','_',r['scope'])+'_'+r['month']
-                if q.get('format')=='pdf':self.respond(monthly_pdf(r),mime='application/pdf',filename=name+'.pdf')
-                else:self.respond(xlsx_report(r),mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',filename=name+'.xlsx')
-                return
-            if p=='/api/all-reports':self.respond(all_reports_zip(q.get('month','')),mime='application/zip',filename=f"Reportes_marketing_{q.get('month','')}.zip");return
-            if p=='/api/template':self.respond(excel_template(q.get('mode','movement')),mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',filename='Plantilla_'+('conteo' if q.get('mode')=='count' else 'movimientos')+'.xlsx');return
-            if p=='/api/backup':self.respond(backup_zip(),mime='application/zip',filename='Respaldo_marketing_'+today().isoformat()+'.zip');return
-            if p=='/api/attachment':
-                with reading() as c:r=c.execute('SELECT name,mime,data FROM attachments WHERE id=?',(integer(q.get('id')),)).fetchone()
-                if not r:raise AppError('Adjunto no encontrado.')
-                self.respond(r['data'],mime=r['mime'],filename=r['name']);return
-            self.respond({'error':'Ruta no encontrada.'},404)
-        except AppError as e:self.respond({'error':str(e)},400)
-        except Exception as e:self.handle_error(e)
-    def do_POST(self):
-        try:
-            p=urlparse(self.path).path;self.authorized(True)
-            length=int(self.headers.get('Content-Length','0'))
-            if length<1 or length>MAX_UPLOAD*2:raise AppError('Tamaño de solicitud no permitido.')
-            if not self.headers.get('Content-Type','').startswith('application/json'):raise AppError('Formato de solicitud no permitido.')
-            try:data=json.loads(self.rfile.read(length))
-            except (ValueError,UnicodeDecodeError):raise AppError('La solicitud contiene datos inválidos.')
-            if not isinstance(data,dict):raise AppError('La solicitud debe ser un objeto.')
-            routes={'/api/movement':submit_movement,'/api/resolve':submit_resolution,'/api/cancel':cancel_document,
-                '/api/product':add_product,'/api/count':save_count,'/api/close-month':close_month,'/api/import':import_rows,
-                '/api/attach':attach_file,'/api/logo':save_logo}
-            if p not in routes:self.respond({'error':'Ruta no encontrada.'},404);return
-            self.respond(routes[p](data))
-        except AppError as e:self.respond({'error':str(e)},400)
-        except Exception as e:self.handle_error(e)
-    def handle_error(self,e):
-        try:
-            DATA_DIR.mkdir(exist_ok=True,parents=True)
-            with (DATA_DIR/'errores.log').open('a',encoding='utf-8') as f:
-                f.write('\n'+now_iso()+'\n'+traceback.format_exc())
-        except Exception:pass
-        if isinstance(e,ImportError):msg='Falta una librería para esta función. Ejecuta INSTALAR_MARKETING.bat o instala openpyxl XlsxWriter reportlab Pillow.'
-        elif isinstance(e,sqlite3.OperationalError):msg='No se pudo acceder a la base de datos. Revisa espacio en disco y permisos de la carpeta; no borres datos_marketing.'
-        else:msg='No se completó la operación. Los movimientos transaccionales no quedaron a medias. Revisa datos_marketing/errores.log para el detalle.'
-        self.respond({'error':msg},500)
+BRIDGE_JS = r"""/* Streamlit v1 component protocol. No database credentials or inventory here. */
+(()=>{
+  'use strict';
+  const pending=new Map();
+  const queue=[];
+  let active=null, ready=false;
+  let parentOrigin='*';
+  try {if(document.referrer) parentOrigin=new URL(document.referrer).origin;} catch(_){}
+  const send=(type,extra={})=>window.parent.postMessage({isStreamlitMessage:true,type,...extra},parentOrigin);
+  const uid=()=>crypto.randomUUID();
+  function next(){
+    if(!ready || active || !queue.length)return;
+    active=queue.shift();
+    send('streamlit:setComponentValue',{value:active.request,dataType:'json'});
+  }
+  function receive(event){
+    if(event.source!==window.parent || !event.data || event.data.type!=='streamlit:render')return;
+    if(parentOrigin!=='*' && event.origin!==parentOrigin)return;
+    ready=true;
+    const args=event.data.args||{};
+    send('streamlit:setFrameHeight',{height:Math.max(650,Math.min(1400,args.frame_height||900))});
+    const result=args.response;
+    if(result && pending.has(result.id)){
+      const entry=pending.get(result.id);
+      pending.delete(result.id);
+      clearTimeout(entry.timer);
+      if(active && active.request.id===result.id)active=null;
+      const headers=new Headers(result.headers||{});
+      let body;
+      if(result.encoding==='base64'){
+        const raw=atob(result.body||'');
+        const bytes=new Uint8Array(raw.length);
+        for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+        body=bytes;
+      }else{
+        body=JSON.stringify(result.body??{});
+      }
+      entry.resolve(new Response(body,{status:result.status||200,headers}));
+    }
+    next();
+  }
+  window.marketingBridgeFetch=(url,options={})=>new Promise((resolve,reject)=>{
+    let parsed;
+    try{parsed=new URL(url,'https://marketing.invalid');}catch(e){reject(e);return;}
+    if(parsed.origin!=='https://marketing.invalid' || !parsed.pathname.startsWith('/api/')){
+      reject(new Error('Ruta no permitida.'));return;
+    }
+    let data=null;
+    try{if(options.body)data=JSON.parse(options.body);}catch(e){reject(new Error('Solicitud inválida.'));return;}
+    const request={id:uid(),path:parsed.pathname+parsed.search,method:options.method||'GET',data};
+    const entry={request,resolve,reject};
+    entry.timer=setTimeout(()=>{
+      pending.delete(request.id);
+      const idx=queue.indexOf(entry);if(idx>=0)queue.splice(idx,1);
+      if(active===entry)active=null;
+      reject(new Error('La respuesta está tardando o se perdió la conexión. Consulta Movimientos antes de crear otra ficha: el guardado puede haberse completado.'));
+      next();
+    },180000);
+    pending.set(request.id,entry);queue.push(entry);next();
+  });
+  window.addEventListener('message',receive);
+  send('streamlit:componentReady',{apiVersion:1});
+})();
+"""
 
-def main():
-    parser=argparse.ArgumentParser(description='Almacén de marketing Makropetrol · servidor local')
-    parser.add_argument('--port',type=int,default=8510)
-    parser.add_argument('--no-browser',action='store_true')
-    args=parser.parse_args()
-    if not 1024<=args.port<=65400:parser.error('Usa un puerto entre 1024 y 65400.')
-    init_db()
-    server=None
-    for port in range(args.port,args.port+20):
-        try:server=ThreadingHTTPServer(('127.0.0.1',port),Handler);break
-        except OSError:continue
-    if server is None:raise AppError('No se encontró un puerto local disponible. Usa --port 8600.')
-    url=f'http://127.0.0.1:{server.server_address[1]}'
-    print('\n'+'='*62+'\n  MAKROPETROL · ALMACÉN DE MARKETING '+VERSION+'\n'+'='*62)
-    print('  Abre en tu navegador: '+url+'\n  Datos: '+str(DATA_DIR))
-    print('  Mantén esta ventana abierta. Ctrl+C detiene la app.\n')
-    if not args.no_browser:
-        timer=threading.Timer(.8,lambda:webbrowser.open(url));timer.daemon=True;timer.start()
-    try:server.serve_forever(poll_interval=.3)
-    except KeyboardInterrupt:print('\nAplicación detenida. Los datos permanecen guardados.')
-    finally:server.server_close()
+# ---------------------------------------------------------------------------
+# INICIO STREAMLIT: no se ejecuta al importar el módulo para pruebas.
+# ---------------------------------------------------------------------------
+SECRETS_EXAMPLE = '''[app]
+password = "REEMPLAZA_POR_UNA_CLAVE_PRIVADA_DE_16_CARACTERES_O_MAS"
+
+[postgres]
+host = "HOST_DEL_SESSION_POOLER"
+port = 5432
+dbname = "postgres"
+user = "postgres.REFERENCIA_DEL_PROYECTO"
+password = "CONTRASENA_DE_LA_BASE"
+sslmode = "require"
+'''
+
+
+def connection_hint(exc):
+    """Diagnóstico útil sin mostrar contraseñas, consultas ni cadena de conexión."""
+    code = getattr(exc, 'sqlstate', None)
+    msg = str(exc).lower()  # Se examina localmente, nunca se imprime completo.
+    if isinstance(exc, ImportError):
+        return 'Falta una librería. Sustituye requirements.txt por el archivo de esta versión y reinicia la app.'
+    if code in ('28P01','28000') or 'password authentication' in msg:
+        return 'La base rechazó el usuario o la contraseña. Copia el usuario completo del Session pooler; la contraseña es la de PostgreSQL, no una API key.'
+    if code=='42501':
+        return 'El usuario de PostgreSQL no tiene los permisos necesarios para crear o utilizar el esquema marketing.'
+    if 'translate host name' in msg or 'name or service not known' in msg or 'could not resolve' in msg:
+        return 'No se pudo encontrar el servidor. Revisa postgres.host; usa el host real del Session pooler, sin https:// ni rutas.'
+    if 'timeout' in msg or 'timed out' in msg:
+        return 'El servidor no respondió a tiempo. Comprueba que el proyecto de la base esté activo, el host y el puerto del Session pooler.'
+    return 'Comprueba que la base esté activa y revisa host, usuario completo, contraseña, puerto y SSL en Settings > Secrets.'
+
+
+def run_streamlit():
+    import streamlit as st
+    import streamlit.components.v1 as components
+    st.set_page_config(page_title='Marketing · Makropetrol',page_icon='📦',layout='wide',initial_sidebar_state='collapsed')
+    st.markdown('''<style>
+    .stApp {background:#f7f5fa;color:#302340;}
+    .block-container {padding:1.1rem .8rem .5rem;max-width:none;}
+    [data-testid="stForm"] {border:1px solid #ded4e7;border-radius:20px;background:white;padding:25px;}
+    </style>''',unsafe_allow_html=True)
+
+    def setup_screen(message, invalid=False):
+        st.title('Marketing · Makropetrol')
+        st.success('La aplicación de Streamlit ya está cargando correctamente.')
+        (st.error if invalid else st.info)(message)
+        st.subheader('Falta conectar el almacén a su base de datos')
+        st.write('Abre Gestionar aplicación → Settings / Configuración → Secrets. Completa los valores con los datos reales de tu proyecto PostgreSQL. En Supabase, utiliza Connect → Session pooler.')
+        st.code(SECRETS_EXAMPLE,language='toml')
+        st.warning('Guarda las claves únicamente en Secrets, no en el repositorio ni en una captura. No publiques movimientos reales hasta conectar la base externa.')
+        st.caption('Sin conexión no se reinicia ni se sustituye el inventario por un archivo temporal. Los artículos iniciales se incorporan una sola vez en una base nueva.')
+        st.caption('Código correcto: Marketing.py · Dependencias: requirements.txt · Versión '+VERSION)
+        st.stop()
+
+    try:
+        app_settings=dict(st.secrets['app'])
+        db_settings=dict(st.secrets['postgres'])
+    except Exception:
+        setup_screen('Todavía no están configuradas las secciones app y postgres en Secrets.')
+    password=str(app_settings.get('password',''))
+    if len(password)<16 or any(x in password.upper() for x in ('CAMBIA_ESTA','TU_CLAVE_LARGA','REEMPLAZA_','TU_CONTRASENA_PRIVADA')):
+        setup_screen('Configura app.password con una contraseña propia de al menos 16 caracteres.',True)
+    if db_settings.get('driver')=='sqlite-test':
+        setup_screen('La interfaz publicada no admite sqlite-test. Configura PostgreSQL para guardar los movimientos de forma persistente.',True)
+    try:
+        configure(db_settings)
+        if any(x in str(db_settings['host']).upper() for x in ('HOST_DEL','HOST_REAL','REEMPLAZA')):
+            raise ValueError('Host de ejemplo')
+        if '://' in str(db_settings['host']):
+            raise ValueError('El host no es una URL')
+    except (ValueError,TypeError,KeyError):
+        setup_screen('La sección postgres está incompleta o conserva valores de ejemplo. Copia los datos reales del Session pooler.',True)
+
+    auth_digest=hashlib.sha256(password.encode()).hexdigest()
+    now=time.time()
+    authenticated=hmac.compare_digest(str(st.session_state.get('auth','')),auth_digest) and now<st.session_state.get('auth_until',0)
+    if not authenticated:
+        for name in ('cloud_response','cloud_seen_request','marketing_workspace'):
+            st.session_state.pop(name,None)
+        _,middle,_=st.columns([1,2,1])
+        with middle:
+            st.markdown('## Marketing · Makropetrol')
+            st.caption('Almacén central · Acceso del equipo')
+            if now<float(st.session_state.get('login_locked_until',0)):
+                st.error('Hubo varios intentos incorrectos. Espera un minuto antes de volver a entrar.')
+                st.stop()
+            with st.form('login_form',clear_on_submit=True):
+                entered=st.text_input('Contraseña del equipo',type='password')
+                submit=st.form_submit_button('Entrar al almacén',type='primary',use_container_width=True)
+            if submit:
+                if hmac.compare_digest(entered.encode(),password.encode()):
+                    st.session_state['auth']=auth_digest
+                    st.session_state['auth_until']=time.time()+8*60*60
+                    st.session_state['login_failures']=0
+                    st.rerun()
+                else:
+                    count=int(st.session_state.get('login_failures',0))+1
+                    st.session_state['login_failures']=count
+                    if count>=5:
+                        st.session_state['login_locked_until']=time.time()+60
+                        st.session_state['login_failures']=0
+                    time.sleep(1)
+                    st.error('La contraseña no es correcta.')
+            st.caption('Las fichas y el inventario solo se muestran después de entrar.')
+        st.stop()
+
+    # La clave de caché cambia si cambia la conexión o la versión. El inventario
+    # usa además un marcador transaccional persistente; nunca se suma por recarga.
+    @st.cache_resource(show_spinner=False)
+    def initialize_database(settings_signature: str, app_version: str):
+        init_db()
+        return True
+
+    database_signature=hashlib.sha256(repr(sorted(db_settings.items())).encode()).hexdigest()
+    try:
+        with st.spinner('Conectando al almacén y comprobando su apertura…'):
+            initialize_database(database_signature,VERSION)
+    except Exception as exc:
+        logging.getLogger('marketing').error('Inicialización fallida: %s; SQLSTATE: %s',type(exc).__name__,getattr(exc,'sqlstate',None))
+        st.error('La interfaz ya funciona, pero no se pudo conectar o preparar la base externa.')
+        st.info(connection_hint(exc))
+        st.caption('No se borró inventario ni se utilizó una base temporal alternativa.')
+        if st.button('Volver a comprobar la conexión'):
+            st.rerun()
+        st.stop()
+
+    @st.cache_resource(show_spinner=False)
+    def component_files(asset_signature: str):
+        # Solo archivos estáticos, no bases, movimientos ni secretos en /tmp.
+        root=Path(tempfile.gettempdir())/('makropetrol_marketing_ui_'+asset_signature)
+        root.mkdir(parents=True,exist_ok=True)
+        for filename,content in [('index.html',FRONTEND_HTML),('bridge.js',BRIDGE_JS)]:
+            temp=root/(filename+'.'+uuid.uuid4().hex+'.tmp')
+            temp.write_text(content,encoding='utf-8')
+            os.replace(temp,root/filename)
+        return str(root)
+
+    left,right=st.columns([8,1])
+    with left:
+        st.caption('MAKROPETROL · MARKETING · Base externa · '+VERSION)
+    with right:
+        if st.button('Salir',use_container_width=True):
+            st.session_state.clear()
+            st.rerun()
+    asset_signature=hashlib.sha256((FRONTEND_HTML+BRIDGE_JS).encode()).hexdigest()[:20]
+    component=components.declare_component('marketing_workspace',path=component_files(asset_signature))
+    request=component(response=st.session_state.get('cloud_response'),frame_height=950,key='marketing_workspace',default=None)
+    if isinstance(request,dict) and request.get('id')!=st.session_state.get('cloud_seen_request'):
+        response=dispatch(request)
+        st.session_state['cloud_seen_request']=request.get('id')
+        st.session_state['cloud_response']=response
+        st.rerun()
+    with st.expander('Ayuda de conexión y versión'):
+        st.caption('El espacio de trabajo se muestra arriba. Si no termina de cargar, comprueba los registros en Gestionar aplicación y recarga la página. Antes de repetir una entrega, consulta Movimientos.')
+        st.caption('Versión '+VERSION+' · No utiliza un servidor localhost adicional.')
+
 
 if __name__=='__main__':
-    try:main()
-    except AppError as exc:
-        print('\nNo se pudo abrir la aplicación: '+str(exc),file=sys.stderr);sys.exit(1)
+    run_streamlit()
