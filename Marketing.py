@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Makropetrol Marketing 1.5 - catálogo verificado y pedidos de prueba sin descuento.
+"""Makropetrol Marketing 1.5.1 - catálogo completo y cantidades KEYSTONE revisables.
+Las cantidades de KEYSTONE B6:B43 son una referencia del bloque anterior.
+Solo se aplican cuando una persona confirma que representan su existencia actual.
+No se copian automáticamente saldos históricos ni se reinicia la base.
 Publicar Marketing.py + requirements.txt; entrada: Marketing.py.
 SIN contraseña de entrada. SQLite por defecto conserva la compatibilidad local.
 Para persistencia externa: [storage] backend="postgres" + [postgres] en Secrets.
@@ -18,7 +21,7 @@ import logging, time, types, contextvars, copy
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-VERSION = '1.5.0-catalogo-verificado-pruebas'
+VERSION = '1.5.1-cantidades-keystone-verificables'
 OPENING_DAY = '2026-10-30'
 SOURCE_NAME = 'INVENTARIOS MARCAS30-10.xlsx'
 SEED_B64 = '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'
@@ -355,6 +358,107 @@ def catalog_csv():
     return ('\ufeff'+stream.getvalue()).encode('utf-8')
 
 
+
+# Cantidades conservadas del archivo original; propuestas, nunca saldos automáticos.
+KEYSTONE_QUANTITY_SOURCE = {'file': 'INVENTARIOS MARCAS30-10 (2).xlsx', 'source_id': 'KEYSTONE_B6_B43_v151', 'date_label': '22/08/2026', 'right_date_label': '02/11/2026', 'items': [{'code': 'MKT-0025', 'brand': 'KEYSTONE', 'name': 'AFICHE KEYSTONE REPUESTOS', 'quantity': 162, 'quantity_raw': 162, 'source': "'KEYSTONE'!A6; B6", 'right_source': "'KEYSTONE'!D6; E6", 'right_raw': None}, {'code': 'MKT-0033', 'brand': 'KEYSTONE', 'name': 'CINTILLOS KEYSTONE RESPUESTOS', 'quantity': 1732, 'quantity_raw': 1732, 'source': "'KEYSTONE'!A7; B7", 'right_source': "'KEYSTONE'!D7; E7", 'right_raw': None}, {'code': 'MKT-0047', 'brand': 'KEYSTONE', 'name': 'HABLADOR DE PRECIO KEYSTONE RESPUESTOS', 'quantity': 900, 'quantity_raw': 900, 'source': "'KEYSTONE'!A8; B8", 'right_source': "'KEYSTONE'!D8; E8", 'right_raw': None}, {'code': 'MKT-0035', 'brand': 'KEYSTONE', 'name': 'COLGANTES KEYSTONE RESPUESTOS', 'quantity': 150, 'quantity_raw': 150, 'source': "'KEYSTONE'!A9; B9", 'right_source': "'KEYSTONE'!D9; E9", 'right_raw': None}, {'code': 'MKT-0056', 'brand': 'KEYSTONE', 'name': 'PAPEL DE ANAQUEL KEYSTONE RESPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A10; B10", 'right_source': "'KEYSTONE'!D10; E10", 'right_raw': '-'}, {'code': 'MKT-0059', 'brand': 'KEYSTONE', 'name': 'SOMBRILLA KEYSTONE REPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A11; B11", 'right_source': "'KEYSTONE'!D11; E11", 'right_raw': None}, {'code': 'MKT-0034', 'brand': 'KEYSTONE', 'name': 'COBERTOR PARA AUTO KEYSTONE REPUESTOS', 'quantity': 3, 'quantity_raw': 3, 'source': "'KEYSTONE'!A12; B12", 'right_source': "'KEYSTONE'!D12; E12", 'right_raw': None}, {'code': 'MKT-0027', 'brand': 'KEYSTONE', 'name': 'BANDERINES KEYSTONE REPUESTOS', 'quantity': 92, 'quantity_raw': 92, 'source': "'KEYSTONE'!A13; B13", 'right_source': "'KEYSTONE'!D13; E13", 'right_raw': None}, {'code': 'MKT-0028', 'brand': 'KEYSTONE', 'name': 'BANDEROLA TIPO PLUMA KEYSTONE REPUESTOS', 'quantity': 2, 'quantity_raw': 2, 'source': "'KEYSTONE'!A14; B14", 'right_source': "'KEYSTONE'!D14; E14", 'right_raw': None}, {'code': 'MKT-0052', 'brand': 'KEYSTONE', 'name': 'KIT DE LIMPIEZA KEYSTONE REPUESTOS', 'quantity': 16, 'quantity_raw': 16, 'source': "'KEYSTONE'!A15; B15", 'right_source': "'KEYSTONE'!D15; E15", 'right_raw': None}, {'code': 'MKT-0055', 'brand': 'KEYSTONE', 'name': 'LLAVERO DE GOMA KEYSTONE REPUESTOS', 'quantity': 177, 'quantity_raw': 177, 'source': "'KEYSTONE'!A16; B16", 'right_source': "'KEYSTONE'!D16; E16", 'right_raw': None}, {'code': 'MKT-0040', 'brand': 'KEYSTONE', 'name': 'DESTAPADOR KEYSTONE REPUESTOS', 'quantity': 110, 'quantity_raw': 110, 'source': "'KEYSTONE'!A17; B17", 'right_source': "'KEYSTONE'!D17; E17", 'right_raw': None}, {'code': 'MKT-0039', 'brand': 'KEYSTONE', 'name': 'CORNETA DE BLUETOOTH KEYSTONE REPUESTOS', 'quantity': 2, 'quantity_raw': 2, 'source': "'KEYSTONE'!A18; B18", 'right_source': "'KEYSTONE'!D18; E18", 'right_raw': None}, {'code': 'MKT-0038', 'brand': 'KEYSTONE', 'name': 'COOLER PLASTICO KEYSTONE REPUESTOS', 'quantity': 140, 'quantity_raw': 140, 'source': "'KEYSTONE'!A19; B19", 'right_source': "'KEYSTONE'!D19; E19", 'right_raw': None}, {'code': 'MKT-0036', 'brand': 'KEYSTONE', 'name': 'CONTENEDOR KEYSTONE REPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A20; B20", 'right_source': "'KEYSTONE'!D20; E20", 'right_raw': None}, {'code': 'MKT-0048', 'brand': 'KEYSTONE', 'name': 'HERRAMIENTA SACA FILTRO KEYSTONE REPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A21; B21", 'right_source': "'KEYSTONE'!D21; E21", 'right_raw': None}, {'code': 'MKT-0061', 'brand': 'KEYSTONE', 'name': 'TOLDO TIPO CARPA KEYSTONE REPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A22; B22", 'right_source': "'KEYSTONE'!D22; E22", 'right_raw': '-'}, {'code': 'MKT-0031', 'brand': 'KEYSTONE', 'name': 'BOLSA ECOLOGICA POP KEYSTONE REPUESTOS', 'quantity': 40, 'quantity_raw': 40, 'source': "'KEYSTONE'!A23; B23", 'right_source': "'KEYSTONE'!D23; E23", 'right_raw': None}, {'code': 'MKT-0046', 'brand': 'KEYSTONE', 'name': 'GUANTES KEYSTONE REPUESTOS', 'quantity': 17, 'quantity_raw': 17, 'source': "'KEYSTONE'!A24; B24", 'right_source': "'KEYSTONE'!D24; E24", 'right_raw': None}, {'code': 'MKT-0057', 'brand': 'KEYSTONE', 'name': 'PROBADOR DE BUJIAS KEYSTONE REPUESTOS', 'quantity': 5, 'quantity_raw': 5, 'source': "'KEYSTONE'!A25; B25", 'right_source': "'KEYSTONE'!D25; E25", 'right_raw': None}, {'code': 'MKT-0062', 'brand': 'KEYSTONE', 'name': 'UNIFORME KEYSTONE REPUESTOS', 'quantity': 1, 'quantity_raw': 1, 'source': "'KEYSTONE'!A26; B26", 'right_source': "'KEYSTONE'!D26; E26", 'right_raw': None}, {'code': 'MKT-0060', 'brand': 'KEYSTONE', 'name': 'TOALLA KEYSTONE REPUESTOS', 'quantity': 3, 'quantity_raw': 3, 'source': "'KEYSTONE'!A27; B27", 'right_source': "'KEYSTONE'!D27; E27", 'right_raw': None}, {'code': 'MKT-0045', 'brand': 'KEYSTONE', 'name': 'GLOBOS KEYSTONE REPUESTOS', 'quantity': 30, 'quantity_raw': 30, 'source': "'KEYSTONE'!A28; B28", 'right_source': "'KEYSTONE'!D28; E28", 'right_raw': None}, {'code': 'MKT-0050', 'brand': 'KEYSTONE', 'name': 'KIT DE EMERGENCIA PLEGABLE KEYSTONE REPUESTOS', 'quantity': 6, 'quantity_raw': 6, 'source': "'KEYSTONE'!A29; B29", 'right_source': "'KEYSTONE'!D29; E29", 'right_raw': None}, {'code': 'MKT-0042', 'brand': 'KEYSTONE', 'name': 'EMBUDO KEYSTONE REPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A30; B30", 'right_source': "'KEYSTONE'!D30; E30", 'right_raw': None}, {'code': 'MKT-0037', 'brand': 'KEYSTONE', 'name': 'COOLER DE METAL KEYSTONE REPUESTOS', 'quantity': 6, 'quantity_raw': 6, 'source': "'KEYSTONE'!A31; B31", 'right_source': "'KEYSTONE'!D31; E31", 'right_raw': None}, {'code': 'MKT-0029', 'brand': 'KEYSTONE', 'name': 'BOLIGRAFO CON GOMA PARA TACTIL KEYSTONE REPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A32; B32", 'right_source': "'KEYSTONE'!D32; E32", 'right_raw': None}, {'code': 'MKT-0053', 'brand': 'KEYSTONE', 'name': 'LANYARD KEYSTONE REPUESTOS', 'quantity': 110, 'quantity_raw': 110, 'source': "'KEYSTONE'!A33; B33", 'right_source': "'KEYSTONE'!D33; E33", 'right_raw': None}, {'code': 'MKT-0054', 'brand': 'KEYSTONE', 'name': 'LIBRETA KEYSTONE REPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A34; B34", 'right_source': "'KEYSTONE'!D34; E34", 'right_raw': None}, {'code': 'MKT-0030', 'brand': 'KEYSTONE', 'name': 'BOLIGRAFO DE METAL KEYSTONE REPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A35; B35", 'right_source': "'KEYSTONE'!D35; E35", 'right_raw': None}, {'code': 'MKT-0026', 'brand': 'KEYSTONE', 'name': 'AFICHE LIMPIADOR ABRILLANTADOR KEYSTONE RESPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A36; B36", 'right_source': "'KEYSTONE'!D36; E36", 'right_raw': None}, {'code': 'MKT-0051', 'brand': 'KEYSTONE', 'name': 'KIT DE HERRAMIENTAS KEYSTONE REPUESTOS', 'quantity': 7, 'quantity_raw': 7, 'source': "'KEYSTONE'!A37; B37", 'right_source': "'KEYSTONE'!D37; E37", 'right_raw': None}, {'code': 'MKT-0049', 'brand': 'KEYSTONE', 'name': 'HOJA HABLADORA LIMPIADOR Y ABRILLANTADOR KEYSTONE RESPUESTOS', 'quantity': 120, 'quantity_raw': 120, 'source': "'KEYSTONE'!A38; B38", 'right_source': "'KEYSTONE'!D38; E38", 'right_raw': None}, {'code': 'MKT-0041', 'brand': 'KEYSTONE', 'name': 'DIPTICO KEYSTONE REPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A39; B39", 'right_source': "'KEYSTONE'!D39; E39", 'right_raw': None}, {'code': 'MKT-0032', 'brand': 'KEYSTONE', 'name': 'CATALOGO KEYSTONE RESPUESTOS', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A40; B40", 'right_source': "'KEYSTONE'!D40; E40", 'right_raw': None}, {'code': 'MKT-0044', 'brand': 'KEYSTONE', 'name': 'EXTINTOR KEYSTONE REPUESTOS', 'quantity': 3, 'quantity_raw': 3, 'source': "'KEYSTONE'!A41; B41", 'right_source': "'KEYSTONE'!D41; E41", 'right_raw': None}, {'code': 'MKT-0058', 'brand': 'KEYSTONE', 'name': 'ROLL UP', 'quantity': 0, 'quantity_raw': '-', 'source': "'KEYSTONE'!A42; B42", 'right_source': "'KEYSTONE'!D42; E42", 'right_raw': None}, {'code': 'MKT-0043', 'brand': 'KEYSTONE', 'name': 'EXHIBIDOR DE MOSTRADOR KEYSTONE RESPUESTO', 'quantity': 12, 'quantity_raw': 12, 'source': "'KEYSTONE'!A43; B43", 'right_source': "'KEYSTONE'!D43; E43", 'right_raw': None}], 'sha256': '75997938ed26f7e0efc2844b2479272b169bab9eeaf4793217144fa62cdf2767'}
+KEYSTONE_IMPORT_META = 'verified_keystone_quantities_v151'
+
+
+def keystone_quantity_review(c=None):
+    """Compare historical source quantities with current stock; this call never writes."""
+    if c is None:
+        with reading() as cx:
+            return keystone_quantity_review(cx)
+    byidentity={(norm(p['brand']),norm(p['name'])):p for p in product_list(c)}
+    result=[]
+    for row in KEYSTONE_QUANTITY_SOURCE['items']:
+        p=byidentity.get((norm(row['brand']),norm(row['name'])))
+        result.append({**row,'product_id':p['id'] if p else None,
+                       'current_code':p['code'] if p else None,
+                       'current_stock':p['stock'] if p else None})
+    applied_raw=meta(c,KEYSTONE_IMPORT_META,'')
+    applied=json.loads(applied_raw) if applied_raw else None
+    return {'source_id':KEYSTONE_QUANTITY_SOURCE['source_id'],
+            'source_file':KEYSTONE_QUANTITY_SOURCE['file'],
+            'source_sha256':KEYSTONE_QUANTITY_SOURCE['sha256'],
+            'source_date_label':KEYSTONE_QUANTITY_SOURCE['date_label'],
+            'source_range':"KEYSTONE!B6:B43",
+            'right_range':"KEYSTONE!E6:E43",'items':result,
+            'source_total':sum(r['quantity'] for r in result),
+            'current_total':sum(r['current_stock'] or 0 for r in result),
+            'revision':int(meta(c,'revision','0')),'epoch':meta(c,'storage_epoch'),
+            'applied':applied,
+            'has_missing_products':any(r['product_id'] is None for r in result)}
+
+
+def apply_keystone_quantities(data):
+    """One-time, explicitly verified stock correction; not a supplier receipt.
+
+    The backend checks completeness, whole quantities, current revision and the
+    restored-database epoch. Only these 38 identities may change. Other stock,
+    receipts, signatures, tests and closures are left intact.
+    """
+    key=validate_key(data.get('key'));payload=fingerprint(data)
+    if data.get('confirmed_current_stock') is not True:
+        raise AppError('Revisa las cantidades y confirma expresamente que son las existencias actuales.')
+    if data.get('source_id')!=KEYSTONE_QUANTITY_SOURCE['source_id']:
+        raise AppError('La referencia de cantidades no corresponde a esta revisión.')
+    operator=text(data.get('operator'))
+    if not operator:raise AppError('Escribe el nombre de quien verifica las cantidades.')
+    with transaction() as c:
+        previous=already(c,key,payload)
+        if previous:
+            saved=json.loads(meta(c,KEYSTONE_IMPORT_META,'{}'))
+            return {'id':previous,'reused':True,'stock_changed':False,
+                    'total_after':saved.get('total_after',0)}
+        if meta(c,KEYSTONE_IMPORT_META):
+            raise AppError('Estas cantidades ya fueron verificadas y aplicadas. No se vuelven a cargar. Usa Recibir mercancía o Conteo físico para movimientos posteriores.')
+        review=keystone_quantity_review(c)
+        if data.get('expected_epoch')!=review['epoch']:
+            raise AppError('El almacén fue restaurado. Cierra la ventana y vuelve a revisar las cantidades.')
+        if integer(data.get('revision'),zero=True)!=review['revision']:
+            raise AppError('El inventario cambió mientras revisabas. Cierra esta ventana, actualiza y vuelve a abrir la revisión.')
+        if review['has_missing_products']:
+            raise AppError('Faltan referencias del catálogo. Ejecuta Revisar catálogo antes de cargar cantidades.')
+        raw=data.get('items')
+        if not isinstance(raw,list) or len(raw)!=len(review['items']):
+            raise AppError('La revisión debe incluir las 38 referencias KEYSTONE, también las de cantidad cero.')
+        expected={r['product_id']:r for r in review['items']};quantities={}
+        for r in raw:
+            if not isinstance(r,dict):raise AppError('La lista de cantidades no es válida.')
+            pid=integer(r.get('product_id'))
+            if pid not in expected or pid in quantities:
+                raise AppError('Hay un artículo repetido o que no corresponde a KEYSTONE.')
+            quantities[pid]=integer(r.get('counted'),zero=True)
+        if set(quantities)!=set(expected):raise AppError('La revisión está incompleta.')
+        day=check_day(c,today().isoformat())
+        note=('Corrección de carga validada por '+operator+'. Referencia: '+
+              KEYSTONE_QUANTITY_SOURCE['file']+' / KEYSTONE!B6:B43, encabezado '+
+              KEYSTONE_QUANTITY_SOURCE['date_label']+'. Las cantidades fueron verificadas como saldo actual; '
+              'no es una recepción nueva ni un conteo completo de todas las marcas.')
+        comment=text(data.get('note'),1000)
+        if comment:note+=' Observación: '+comment
+        changes=[];verification=[]
+        for pid,r in expected.items():
+            target=quantities[pid];delta=target-r['current_stock']
+            verification.append({'product_id':pid,'code':r['current_code'],'name':r['name'],
+                'source_quantity':r['quantity'],'stock_before':r['current_stock'],
+                'verified_stock':target,'delta':delta,'source':r['source']})
+            if delta:
+                changes.append({'product_id':pid,'quantity':abs(delta),'delta':delta,
+                                'disposition':'AJUSTE_CARGA_KEYSTONE'})
+        did=insert_document(c,'AJUSTE',day,operator,'Cantidades KEYSTONE verificadas',note,
+                            'KEYSTONE B6:B43 · validación única',key,payload,changes)
+        log={'document_id':did,'at':now_iso(),'day':day,'operator':operator,
+             'source_file':KEYSTONE_QUANTITY_SOURCE['file'],'source_sha256':KEYSTONE_QUANTITY_SOURCE['sha256'],
+             'source_range':review['source_range'],'source_date_label':review['source_date_label'],
+             'items':verification,'total_after':sum(quantities.values()),'changed_references':len(changes)}
+        put_meta(c,KEYSTONE_IMPORT_META,json.dumps(log,ensure_ascii=False))
+    return {'id':did,'reused':False,'stock_changed':bool(changes),
+            'references':len(quantities),'total_after':sum(quantities.values()),
+            'changed_references':len(changes)}
+
+
 def submit_test_order(data):
     """A test is a separate TEST document: zero delta, no reservation, no real report."""
     key=validate_key(data.get('key'));payload=fingerprint(data)
@@ -676,7 +780,7 @@ def snapshot():
         logo=meta(c,'company_logo') or DEFAULT_COMPANY_LOGO_B64
         return {'version':VERSION,'today':today().isoformat(),'opening_day':meta(c,'opening_day'),
             'revision':int(meta(c,'revision','0')),'source':SOURCE_NAME,'products':products,'brands':brands,
-            'documents':docs,'tests':tests,'catalog_check':catalog_check(c,products),'events':events,'closures':rows(c,'SELECT month,operator,created_at FROM closures ORDER BY month DESC'),
+            'documents':docs,'tests':tests,'keystone_quantities_applied':bool(meta(c,KEYSTONE_IMPORT_META)), 'catalog_check':catalog_check(c,products),'events':events,'closures':rows(c,'SELECT month,operator,created_at FROM closures ORDER BY month DESC'),
             'operators':[r[0] for r in c.execute("SELECT DISTINCT operator FROM documents WHERE kind NOT IN ('APERTURA','PRUEBA') ORDER BY operator")],
             'recipients':[r[0] for r in c.execute("SELECT DISTINCT recipient FROM documents WHERE recipient!='' AND kind!='PRUEBA' ORDER BY recipient")],
             'data_path':'PostgreSQL externo' if is_cloud() else 'Archivo del servidor (respaldo necesario)',
@@ -1590,6 +1694,7 @@ def _dispatch_original(request):
 
 POST_ROUTES['/api/settings']=save_shared_settings
 POST_ROUTES['/api/catalog-repair']=repair_catalog
+POST_ROUTES['/api/keystone-quantities']=apply_keystone_quantities
 
 
 def dispatch(request):
@@ -1606,6 +1711,8 @@ def dispatch(request):
             data=request.get('data')
             if not isinstance(data,dict):raise AppError('Solicitud inválida.')
             token=_EXPECTED_EPOCH.set(data.get('_storage_epoch','missing'))
+        if method=='GET' and url.path=='/api/keystone-quantities':
+            return {'id':rid,'status':200,'body':keystone_quantity_review()}
         if method=='GET' and url.path=='/api/revision':
             with reading() as c:body={'revision':int(meta(c,'revision','0')),'epoch':meta(c,'storage_epoch')}
             return {'id':rid,'status':200,'body':body}
@@ -1676,7 +1783,7 @@ $('content').innerHTML=`<section class="hero"><div><div class="eyebrow">Tu espac
 <div class="notice">Inventario inicial: <b>${datefmt(S.opening_day)}</b> · 237 referencias incorporadas desde tu conteo. Los artículos agotados no se eliminan; una recepción vuelve a darles existencia.</div>
 <div class="card"><div class="headrow"><div><h2>Actividad reciente</h2><div class="small">Las fichas guardadas permanecen en el historial.</div></div><button class="btn sm" onclick="go('history')">Ver movimientos →</button></div>${docsTable(S.documents.filter(d=>d.kind!=='APERTURA').slice(0,5))}</div>`}
 function inventory(){
-$('content').innerHTML=header('Tu inventario','Catálogo completo: los agotados permanecen para registrar nuevas recepciones.',`<button class="btn" onclick="showCatalogCheck()">Revisar catálogo</button><button class="btn" onclick="newProduct()">${ico('plus')} Nuevo artículo</button><button class="btn primary" onclick="movement('ENTRADA')">${ico('in')} Recibir mercancía</button>`)+
+$('content').innerHTML=header('Tu inventario','Catálogo completo: los agotados permanecen para registrar nuevas recepciones.',`<button class="btn primary" onclick="reviewKeystoneQuantities()">Cargar cantidades KEYSTONE</button><button class="btn" onclick="showCatalogCheck()">Revisar catálogo</button><button class="btn" onclick="newProduct()">${ico('plus')} Nuevo artículo</button><button class="btn primary" onclick="movement('ENTRADA')">${ico('in')} Recibir mercancía</button>`)+
 `<div class="card"><div class="actions" style="margin-bottom:12px">${S.brands.map(b=>{const ps=S.products.filter(p=>p.brand_id===b.id);return `<button class="btn sm ${b.name==='KEYSTONE'?'soft':''}" onclick="filterBrand(${b.id})">${esc(b.name)} · ${ps.length}</button>`}).join('')}</div>
 <div class="filters"><input id="invSearch" placeholder="Buscar gorra, llavero, código…" oninput="inventoryRows()"><select id="invBrand" onchange="inventoryRows()">${brandOptions()}</select><select id="invStatus" onchange="inventoryRows()"><option value="all">Todos · disponibles y agotados</option><option value="stock">Solo con existencia</option><option value="zero">Solo agotados</option></select><button class="btn sm" onclick="clearInventoryFilters()">Limpiar filtros</button></div><div id="invRows"></div></div>`;inventoryRows()}
 function filterBrand(id){$('invBrand').value=id;$('invStatus').value='all';$('invSearch').value='';inventoryRows()}
@@ -1686,8 +1793,46 @@ const q=clean($('invSearch').value),b=$('invBrand').value,status=$('invStatus').
 const brandProducts=S.products.filter(p=>!b||p.brand_id===+b);
 const list=brandProducts.filter(p=>(!q||clean(p.code+' '+p.name+' '+p.brand).includes(q))&&(status==='all'||(status==='zero'?p.stock===0:p.stock>0)));
 const zero=brandProducts.length&&brandProducts.every(p=>p.stock===0);
-$('invRows').innerHTML=`${zero?`<div class="notice warn"><b>Esta marca tiene ${brandProducts.length} artículos registrados, todos agotados.</b> No están eliminados: usa <b>Recibir mercancía</b> para cargar cantidades. También puedes utilizarlos en un pedido de prueba sin descontar.</div>`:''}
+$('invRows').innerHTML=`${zero?`<div class="notice warn">${brandProducts.every(p=>p.brand==='KEYSTONE')&&!S.keystone_quantities_applied?`<b>Los 38 artículos están registrados, pero sus cantidades siguen en cero.</b> El bloque derecho del Excel no contiene números; el izquierdo contiene 3.846 unidades. Revisa cuál corresponde a tu almacén antes de guardarlo.<br><button class="btn soft" style="margin-top:10px" onclick="reviewKeystoneQuantities()">Revisar y cargar cantidades del Excel</button>`:`<b>Esta marca tiene ${brandProducts.length} artículos registrados con saldo cero.</b> Usa <b>Recibir mercancía</b> para sumar una recepción nueva. También puedes utilizarlos en un pedido de prueba sin descontar.`}</div>`:''}
 <div class="small" style="margin-bottom:12px">${list.length} artículos mostrados de ${brandProducts.length} · ${fmt(list.reduce((a,p)=>a+p.stock,0))} unidades</div><div class="tablewrap"><table><thead><tr><th>Código</th><th>Artículo</th><th>Marca / proveedor</th><th class="num">Existencia</th><th>Estado</th></tr></thead><tbody>${list.map(p=>`<tr><td class="code">${esc(p.code)}</td><td class="cellname">${esc(p.name)}</td><td>${esc(p.brand)}</td><td class="num"><b>${fmt(p.stock)}</b></td><td><span class="badge ${p.stock?'good':'zero'}">${p.stock?'Disponible':'Agotado · recargable'}</span></td></tr>`).join('')||'<tr><td colspan="5" class="empty">No hay coincidencias con estos filtros. Prueba Todos o Limpiar filtros.</td></tr>'}</tbody></table></div>`}
+
+let keystoneReview=null,keystoneReviewKey='';
+async function reviewKeystoneQuantities(){
+try{
+const r=await api('/api/keystone-quantities');keystoneReview=r;keystoneReviewKey=key();
+if(r.applied){modal('Cantidades KEYSTONE ya cargadas','Esta revisión se aplica una sola vez.',
+`<div class="success">Se verificaron ${r.items.length} referencias el ${esc(r.applied.day)} por ${esc(r.applied.operator)}.</div><p>La suma al guardar fue <b>${fmt(r.applied.total_after)}</b> unidades. Las entradas y salidas posteriores no se borran ni se reinician.</p>`,
+`<button class="btn" onclick="closeModal()">Cerrar</button><button class="btn primary" onclick="showDocument(${r.applied.document_id})">Ver ajuste registrado</button>`);return;}
+if(r.has_missing_products){throw Error('Faltan productos. Abre Revisar catálogo antes de cargar sus cantidades.');}
+modal('Cargar cantidades KEYSTONE','Revisa las 38 referencias del Excel y confirma sus existencias actuales.',
+`${peopleList()}<div class="notice warn"><b>Origen:</b> ${esc(r.source_file)}, columna B, encabezado ${esc(r.source_date_label)}. Esta es la columna izquierda/anterior; no se presupone que siga vigente.<br>La columna E del bloque derecho contiene blancos o guiones. Los números de B se muestran abajo como propuesta; corrígelos si hoy hay otra cantidad.</div>
+<form id="keystoneQuantityForm"><div class="formgrid"><div class="field"><label>Verificado por</label><input id="kOperator" list="operators" value="${esc(savedOperator())}" maxlength="200" required placeholder="Nombre de la encargada"></div><div class="field"><label>Observaciones</label><input id="kNote" maxlength="1000" placeholder="Verificación del conteo / corrección de carga"></div></div>
+<div class="tablewrap" style="max-height:46vh;margin-top:18px"><table><thead><tr><th>Artículo</th><th class="num">Saldo en app</th><th class="num">Excel · B</th><th class="num">Existencia verificada</th></tr></thead><tbody>${r.items.map(p=>`<tr><td>${esc(p.name)}<div class="small">${esc(p.current_code)} · ${esc(p.source)}</div></td><td class="num">${fmt(p.current_stock)}</td><td class="num">${typeof p.quantity_raw==='number'?fmt(p.quantity):'— (guion)'}</td><td class="num"><input id="kCount_${p.product_id}" class="qtybox" type="number" min="0" step="1" max="100000000" required value="${p.quantity}" oninput="keystoneTotal()"></td></tr>`).join('')}</tbody></table></div>
+<div id="kTotals" class="notice"></div>
+<label class="checkline" style="margin-top:14px"><input id="kConfirmed" type="checkbox" required><span>Revisé las 38 cantidades y confirmo que son las existencias actuales de KEYSTONE. Entiendo que se ajustará el saldo de esta marca a esos valores, sin modificar las otras marcas.</span></label>
+<p class="small">No es una recepción nueva. Se guardará un ajuste identificado con el origen y las diferencias. No se volverá a cargar al reiniciar.</p></form>`,
+`<button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="kSave" form="keystoneQuantityForm" type="submit">Confirmar y cargar cantidades</button>`,true);
+keystoneTotal();$('keystoneQuantityForm').onsubmit=async ev=>{
+ev.preventDefault();if(!$('kConfirmed').checked){modalError('Confirma las existencias verificadas.');return;}
+$('kSave').disabled=true;
+try{
+const operator=$('kOperator').value;
+const answer=await api('/api/keystone-quantities',{key:keystoneReviewKey,source_id:r.source_id,revision:r.revision,expected_epoch:r.epoch,
+operator,note:$('kNote').value,confirmed_current_stock:true,
+items:r.items.map(p=>({product_id:p.product_id,counted:$('kCount_'+p.product_id).value}))});
+rememberOperator(operator);closeModal();await refresh();go('inventory');
+const brand=S.brands.find(b=>b.name==='KEYSTONE');if(brand)filterBrand(brand.id);
+toast(`Cantidades guardadas: ${fmt(answer.total_after||0)} unidades verificadas. No se repetirán al reiniciar.`);
+}catch(e){modalError(e)}finally{if($('kSave'))$('kSave').disabled=false;}
+};
+}catch(e){toast(e.message,true)}
+}
+function keystoneTotal(){if(!keystoneReview||!$('kTotals'))return;
+const values=keystoneReview.items.map(p=>Number($('kCount_'+p.product_id).value));
+const valid=values.every(n=>Number.isSafeInteger(n)&&n>=0&&n<=100000000);
+const total=values.reduce((a,b)=>a+b,0);
+$('kTotals').textContent=valid?`38 referencias · En la app: ${fmt(keystoneReview.current_total)} · Cantidad verificada a guardar: ${fmt(total)} · Diferencia: ${fmt(total-keystoneReview.current_total)}. El resto de las marcas no cambia.`:'Completa cantidades enteras válidas en todas las filas.';}
+
 function showCatalogCheck(){
 const c=S.catalog_check;
 modal('Revisión de todas las marcas',`${c.matched} de ${c.expected} referencias del Excel identificadas.`,
@@ -1840,12 +1985,12 @@ def run_streamlit():
         st.stop()
     @st.cache_resource(show_spinner=False)
     def component_files(signature):
-        root=Path(tempfile.gettempdir())/('marketing_v15_'+signature);root.mkdir(parents=True,exist_ok=True)
+        root=Path(tempfile.gettempdir())/('marketing_v151_'+signature);root.mkdir(parents=True,exist_ok=True)
         for name,content in [('index.html',FRONTEND_HTML),('bridge.js',BRIDGE_JS)]:
             temp=root/(name+'.'+uuid.uuid4().hex+'.tmp');temp.write_text(content,encoding='utf-8');os.replace(temp,root/name)
         return str(root)
     signature=hashlib.sha256((FRONTEND_HTML+BRIDGE_JS).encode()).hexdigest()[:20]
-    component=components.declare_component('marketing_workspace_v15',path=component_files(signature))
+    component=components.declare_component('marketing_workspace_v151',path=component_files(signature))
     # Fragment reruns do not rerun initialization, native restore tools or asset generation.
     @st.fragment
     def workspace():
