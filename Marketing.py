@@ -11,6 +11,7 @@ Cloudflare es el almacenamiento principal; nunca se utiliza SQLite temporal
 como sustituto. Si aún existe la base local anterior, se rescata y migra a una
 base remota vacía. Si no existe, solicita respaldo, nunca reinicia saldos solo.
 """
+# 1.7.2: identificación HTTP, diagnósticos y rescate accesible. Sin cambios en saldos ni Worker.
 from __future__ import annotations
 import base64, calendar, collections, csv, hashlib, html, io, json, math
 import os, re, secrets, shutil, socket, sqlite3, sys, tempfile, threading, traceback
@@ -22,7 +23,7 @@ import logging, time, types, contextvars, copy
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-VERSION = '1.7.1-cloudflare-configurado'
+VERSION = '1.7.2-conexion-diagnostico-rescate'
 OPENING_DAY = '2026-10-30'
 SOURCE_NAME = 'INVENTARIOS MARCAS30-10.xlsx'
 SEED_B64 = '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'
@@ -1958,7 +1959,16 @@ def run_streamlit():
     st.markdown('''<style>.stApp{background:#f7f5fa;color:#302340}
     .block-container{padding:.35rem .6rem .5rem;max-width:none}
     [data-testid="stExpander"]{background:white;border-radius:14px}
-    iframe[title^="marketing"]{border:0;border-radius:14px}</style>''',unsafe_allow_html=True)
+    iframe[title^="marketing"]{border:0;border-radius:14px}
+    [data-testid="stAlert"] [data-testid="stMarkdownContainer"] p,
+    [data-testid="stAlert"] [data-testid="stMarkdownContainer"] li,
+    [data-testid="stWidgetLabel"] p{color:#302340!important}
+    [data-testid="stButton"] button,[data-testid="stDownloadButton"] button{
+        color:#fff!important;background:#67459e!important;border:1px solid #67459e}
+    [data-testid="stButton"] button p,[data-testid="stDownloadButton"] button p{color:inherit!important}
+    .mk-rescue-link{display:inline-block;background:#67459e;color:#fff!important;
+        padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:600;margin:8px 0}
+    </style>''',unsafe_allow_html=True)
 
     def recovery_tools(prefix):
         # Nunca ejecutar init_db() sobre los archivos que se desean rescatar.
@@ -1974,11 +1984,30 @@ def run_streamlit():
                     st.session_state[prefix+'_blob']=blob
                     st.session_state[prefix+'_info']=info
                 except AppError as exc:st.error(str(exc))
+            # En una avería de widgets, un enlace HTML permite descargar el rescate.
+            # Solo lectura de SQLite: no inicializa ni modifica el archivo original.
+            try:
+                stat=chosen.stat();signature=(str(chosen),stat.st_size,stat.st_mtime_ns)
+                if (stat.st_size <= 16*1024*1024 and
+                    st.session_state.get(prefix+'_rescue_signature') != signature):
+                    emergency_blob, emergency_info = rescue_local_backup(chosen)
+                    st.session_state[prefix+'_blob']=emergency_blob
+                    st.session_state[prefix+'_info']=emergency_info
+                    st.session_state[prefix+'_rescue_signature']=signature
+            except Exception:
+                # El botón manual sigue disponible; no divulgar rutas ni datos privados.
+                st.caption('El rescate automático no pudo prepararse; utiliza el botón o conserva el diagnóstico. No se modificó el archivo.')
             if st.session_state.get(prefix+'_blob'):
                 info=st.session_state[prefix+'_info']
                 st.write(f"{info['references']} productos · {info['documents']} fichas · {info['attachments']} adjuntos")
                 st.download_button('Descargar copia de rescate',st.session_state[prefix+'_blob'],
                     'Rescate_Marketing.zip','application/zip',key=prefix+'_download')
+                rescue_blob=st.session_state[prefix+'_blob']
+                if len(rescue_blob)<=16*1024*1024:
+                    encoded=base64.b64encode(rescue_blob).decode('ascii')
+                    st.markdown('<a class="mk-rescue-link" download="Rescate_Marketing.zip" '
+                                'href="data:application/zip;base64,'+encoded+'">'
+                                'Descargar rescate · enlace alternativo</a>',unsafe_allow_html=True)
         else:
             st.info('Aquí no se encontró el archivo local anterior. Usa un respaldo descargado o la base de la PC donde se registraron los datos. '
                     'La apertura original no contiene entregas registradas después.')
@@ -1989,8 +2018,9 @@ def run_streamlit():
                  'Editar código → sustituir por el siguiente código → Implementar. Conserva DB, FILES y MARKETING_API_TOKEN.')
         st.download_button('Descargar código para Cloudflare', CLOUDFLARE_WORKER_JS,
                            file_name='worker.js', mime='text/javascript', key='worker171_download')
-        with st.expander('Mostrar código del Worker para copiar', expanded=False):
-            st.code(CLOUDFLARE_WORKER_JS, language='javascript')
+        st.markdown('<details><summary>Mostrar código del Worker para copiar</summary>'
+                    '<pre style="white-space:pre-wrap;max-height:420px;overflow:auto;background:white;color:#302340;padding:14px">'
+                    +html.escape(CLOUDFLARE_WORKER_JS)+'</pre></details>', unsafe_allow_html=True)
         if st.button('Ya publiqué el Worker · volver a comprobar', key='worker171_retry'):
             st.rerun()
 
@@ -1998,8 +2028,8 @@ def run_streamlit():
         st.title('Marketing · conexión Cloudflare')
         st.error(message)
         st.caption('La app no guardará en el disco temporal ni reiniciará inventario para ocultar un fallo de conexión.')
-        worker_tools()
         recovery_tools('setup_rescue')
+        worker_tools()
         st.stop()
 
     try:
@@ -2054,8 +2084,8 @@ def run_streamlit():
         logging.getLogger('marketing').error('Inicio: %s; SQLSTATE: %s',type(exc).__name__,getattr(exc,'sqlstate',None))
         st.error('No se pudo abrir la base externa. No se creó una base alternativa ni se reinició el inventario.')
         st.info(str(exc) if isinstance(exc,AppError) else 'Revisa que el Worker esté publicado y conserve DB, FILES y MARKETING_API_TOKEN.')
-        worker_tools()
         recovery_tools('offline_rescue')
+        worker_tools()
         if st.button('Comprobar conexión otra vez'):st.rerun()
         st.stop()
 
@@ -2181,38 +2211,109 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise AppError('El Worker intentó redirigir la conexión. Revisa su URL; no se enviaron claves a otro destino.')
 
 
+CF_USER_AGENT = 'MakropetrolMarketing/1.7.2 (Streamlit; D1-R2; server-to-server)'
+
+
+def _cf_error_info(status, response_headers, body, method, path):
+    """Información técnica breve; nunca devuelve claves, filas ni HTML remoto."""
+    headers = response_headers or {}
+    raw = body.decode('utf-8', 'replace') if isinstance(body, bytes) else str(body or '')
+    detail = ''
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict) and isinstance(parsed.get('error'), str):
+            detail = parsed['error'][:700]
+    except (ValueError, TypeError):
+        pass
+    token = (_CF_CONFIG or {}).get('token', '')
+    if token:
+        detail = detail.replace(token, '[clave oculta]')
+    detail = re.sub(r'(?i)Bearer\s+[^\s<>"\']+', 'Bearer [oculto]', detail)
+    detail = re.sub(r'[\x00-\x1f\x7f]', ' ', detail)
+    match = re.search(r'(?i)(?:error(?:\s+code)?|code)\s*[:=]?\s*(1\d{3,4})(?!\d)', raw)
+    cf_code = match.group(1) if match else ''
+    ray = str(headers.get('cf-ray') or headers.get('CF-Ray') or '')
+    ray = re.sub(r'[^A-Za-z0-9-]', '', ray)[:80]
+    route = urlparse(path).path
+    if not re.fullmatch(r'/v1/[A-Za-z0-9/_-]{1,120}', route):
+        route = '/v1/[ruta]'
+    result = {'http': int(status), 'method': method, 'route': route,
+              'cloudflare_code': cf_code, 'ray_id': ray}
+    logging.getLogger('marketing').warning(
+        'Cloudflare HTTP=%s metodo=%s ruta=%s codigo=%s ray=%s',
+        status, method, route, cf_code or '-', ray or '-')
+    _runtime.cf_last_error = result
+    label = f'HTTP {status} · {method} {route}'
+    if cf_code: label += ' · Cloudflare ' + cf_code
+    if ray: label += ' · Ray ID ' + ray
+    return detail, label, cf_code
+
+
 def cf_api(method,path,payload=None,raw=None,binary=False):
-    """Bounded, exact-body retries; never log the token, request body or private rows."""
+    """Identifica la app; reintenta el mismo cuerpo y distingue lectura de escritura."""
     if not is_cloud():raise AppError('Conecta Cloudflare antes de registrar información.')
     if not path.startswith('/v1/') or '://' in path:raise AppError('Ruta Cloudflare inválida.')
     data = raw if raw is not None else (json.dumps(payload,ensure_ascii=False,separators=(',',':')).encode() if payload is not None else None)
-    headers={'Authorization':'Bearer '+_CF_CONFIG['token'],'Accept':'application/octet-stream' if binary else 'application/json'}
+    headers = {'Authorization':'Bearer '+_CF_CONFIG['token'],
+               'Accept':'application/octet-stream' if binary else 'application/json',
+               'User-Agent':CF_USER_AGENT, 'Cache-Control':'no-store'}
     if data is not None:headers['Content-Type']='application/octet-stream' if raw is not None else 'application/json'
     request=urllib.request.Request(_CF_CONFIG['url']+path,data=data,headers=headers,method=method)
+    writing = method.upper() not in ('GET','HEAD')
     for attempt in range(3):
         try:
             with urllib.request.build_opener(_NoRedirect()).open(request,timeout=40) as response:
                 limit=CF_MAX_OBJECT+1 if binary else 10*1024*1024
                 body=response.read(limit+1)
                 if len(body)>limit:raise AppError('La respuesta remota supera el límite seguro; no se cargó parcialmente.')
-                if binary:return body
+                if binary:
+                    _runtime.cf_last_error = None
+                    return body
                 try:answer=json.loads(body)
-                except (ValueError,UnicodeDecodeError):raise AppError('El Worker respondió con un formato inesperado. Publica worker.js de la versión 1.7.') from None
+                except (ValueError,UnicodeDecodeError):
+                    raise AppError('El Worker no devolvió JSON. Comprueba que se publicó el Worker del almacén 1.7; no crees otra apertura.') from None
                 if not isinstance(answer,dict) or answer.get('ok') is not True:
-                    raise AppError('Cloudflare no confirmó la solicitud; no se guardó una copia temporal.')
+                    raise AppError('La respuesta del Worker no confirmó la solicitud. No se utilizó un almacenamiento temporal.')
+                _runtime.cf_last_error = None
                 return answer
         except urllib.error.HTTPError as exc:
-            try:detail=json.loads(exc.read(4096)).get('error','')
-            except Exception:detail=''
-            if exc.code==401:raise AppError('La clave incorporada no coincide con el Secret MARKETING_API_TOKEN del Worker. Revisa que conserve la clave existente, sin cambiarla.') from None
-            if exc.code==404:raise AppError('El Worker no tiene esta ruta o falta un archivo. Publica el worker.js 1.7 y no borres el bucket.') from None
-            if exc.code==409:raise AppError(detail or 'Otra persona guardó cambios. Actualiza y reintenta la misma ficha.') from None
-            if exc.code in (400,413,415):raise AppError(detail or 'Cloudflare rechazó la solicitud; no se aplicó parcialmente.') from None
-            if exc.code in (429,500,502,503,504) and attempt<2:time.sleep(.4*(attempt+1));continue
-            raise CommitNotConfirmed('No se pudo confirmar la respuesta de Cloudflare. Consulta Movimientos antes de repetir una ficha; no uses una apertura nueva.') from None
-        except (urllib.error.URLError,TimeoutError,ConnectionError,OSError):
+            try:response_body=exc.read(4096)
+            except Exception:response_body=b''
+            detail,label,cf_code=_cf_error_info(exc.code,exc.headers,response_body,method,path)
+            if exc.code==401:
+                raise AppError('La clave configurada no coincide con MARKETING_API_TOKEN del Worker. Conserva tu clave y comprueba que ambos valores coincidan. ['+label+']') from None
+            if exc.code==403:
+                message=('Cloudflare bloqueó el acceso antes de confirmar la conexión. '
+                         'Este cliente ya envía la identificación MakropetrolMarketing/1.7.2. '
+                         'No borres D1, R2 ni cambies las existencias; conserva este diagnóstico para revisar la regla o el Worker.')
+                if cf_code=='1010':
+                    message='Cloudflare rechazó la identificación del cliente (1010). '+message
+                raise AppError(message+' ['+label+']') from None
+            if exc.code==404:
+                raise AppError('El Worker no tiene esta ruta o el archivo solicitado no existe. Comprueba el código 1.7 del Worker; no borres el bucket. ['+label+']') from None
+            if exc.code==409:
+                raise AppError((detail or 'Otra persona guardó cambios. Actualiza y reintenta la misma ficha.')+' ['+label+']') from None
+            if exc.code in (400,413,415):
+                raise AppError((detail or 'Cloudflare rechazó la solicitud.')+' ['+label+']') from None
+            if exc.code in (429,500,502,503,504) and attempt<2:
+                time.sleep(.4*(attempt+1));continue
+            message = detail or ('El servicio limitó las solicitudes.' if exc.code==429 else 'El servicio no confirmó la respuesta.')
+            message += ' ['+label+']'
+            if writing:
+                raise CommitNotConfirmed(message+' No repitas una entrega sin comprobar antes su ficha. No se cambió a guardado local.') from None
+            raise AppError(message+' Falló una CONSULTA de conexión; esta consulta no crea una entrega. No uses una apertura nueva.') from None
+        except (urllib.error.URLError,TimeoutError,ConnectionError,OSError) as exc:
             if attempt<2:time.sleep(.4*(attempt+1));continue
-            raise CommitNotConfirmed('No se pudo contactar el Worker. No se guardó localmente como alternativa. Conserva la misma ficha y comprueba el historial antes de reintentar.') from None
+            reason=getattr(exc,'reason',exc)
+            if isinstance(reason,socket.gaierror):kind='DNS: no se pudo resolver el servidor'
+            elif isinstance(reason,(TimeoutError,socket.timeout)):kind='tiempo de conexión agotado'
+            else:kind='fallo de red o de conexión segura'
+            route=urlparse(path).path
+            _runtime.cf_last_error={'http':None,'method':method,'route':route,'category':kind}
+            logging.getLogger('marketing').warning('Cloudflare red metodo=%s ruta=%s categoria=%s',method,route,kind)
+            message='No se pudo contactar Cloudflare ('+kind+'). No se utilizó almacenamiento temporal.'
+            if writing:raise CommitNotConfirmed(message+' Conserva la misma ficha y comprueba el historial antes de reintentar.') from None
+            raise AppError(message+' No se pudo leer el estado remoto; no crees una apertura nueva.') from None
 
 
 def cf_status():
