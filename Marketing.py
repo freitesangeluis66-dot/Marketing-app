@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Makropetrol Marketing 1.5.1 - catálogo completo y cantidades KEYSTONE revisables.
-Las cantidades de KEYSTONE B6:B43 son una referencia del bloque anterior.
-Solo se aplican cuando una persona confirma que representan su existencia actual.
-No se copian automáticamente saldos históricos ni se reinicia la base.
-Publicar Marketing.py + requirements.txt; entrada: Marketing.py.
-SIN contraseña de entrada. SQLite por defecto conserva la compatibilidad local.
-Para persistencia externa: [storage] backend="postgres" + [postgres] en Secrets.
-No incluye credenciales inventadas. No publica ni migra datos automáticamente.
-No conectes una base externa sin respaldar e importar antes los datos existentes.
+"""Makropetrol Marketing 1.7.1 · conexión Cloudflare preconfigurada.
+Un archivo Python: interfaz, catálogo, logo, motor, conexión y copia del Worker.
+No solicita contraseña de entrada ni lee Secrets de Streamlit.
+La credencial está incluida por solicitud expresa del propietario: PUBLICAR
+ESTE ARCHIVO EN UN REPOSITORIO PUBLICO TAMBIEN PUBLICA ESA CREDENCIAL.
+El Worker usa DB, FILES y el Secret MARKETING_API_TOKEN ya configurados.
+No puede desplegarse a sí mismo usando una clave de aplicación.
+Cloudflare es el almacenamiento principal; nunca se utiliza SQLite temporal
+como sustituto. Si aún existe la base local anterior, se rescata y migra a una
+base remota vacía. Si no existe, solicita respaldo, nunca reinicia saldos solo.
 """
 from __future__ import annotations
 import base64, calendar, collections, csv, hashlib, html, io, json, math
@@ -21,7 +22,7 @@ import logging, time, types, contextvars, copy
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-VERSION = '1.5.1-cantidades-keystone-verificables'
+VERSION = '1.7.1-cloudflare-configurado'
 OPENING_DAY = '2026-10-30'
 SOURCE_NAME = 'INVENTARIOS MARCAS30-10.xlsx'
 SEED_B64 = 'eNrFXduS28iR/RVIL7IjZiziTs48FcFqCk0QgACwPZJjH9qt9rhjNc1xS3rY2NiP2E/YD9gnf4J+zJXgDShkVoEsEH5xeCTh8Jy6ZVZVZtZf/vv1w/bT4+ufXq9X1Y+TycR+/cPrv77cP38Sf8QW8R1PxR883/8G/4TdxNE7Xoo/+MfX/3r9k+3/8PrL9tvLA/zdm6wqWGmtWRGx8s2rd274sxW7ofi325enX5+e7z+fACyA3H6Fz6Lt89fHrfW37///5elhaz1sn//29PLb/aet9fv2xWLPvz5+/vb05U+v/+cHmaijIMrTO1aK32GCTpwk2YGxoyIcAOGgTRgBMibu9iC+LOKyF2kfSPs4aQAZpKm9BuN5VpYnvnOWZKn4qZtNNc+S48BwWiMDPnnzamlPf7Zu7WmbawfAmKyvIJsueJEl7Ni0GM2ZYDmTSTY+NCYYkARFn0bZqd/tCdaKwM+WCO4+HKSvQwW7SnTWMlO2nphEt4FMbv/dIPymJL+bgqVc9JG1/+Oa4xRrQhua0G6zlL82JjrTE92k8U1WrPmBbIiRnQDZCUH2gDBE09Y/gjNeZkXRmDUzhCdMbmluH78yZmaTzG55UfIPrS63sVZ0oBWdNr/2t8YkHZJkwtIPrFhYUVZUp+kzczGiMIFsaQa1vx+kr10t2YQVjbnuehhZH8j6ONnd94OQpe1PkrA7sTILAx0J+xw3Vk8PnUwhEJacEhTDmDNthoTBY9acreJ0qRyyHnD1JK6nbwdp2UDNcsGtnKURKyp2pIq1KzRriDBtfD8IXdo4FZuEVwz3mfYkHVhJHWkl3X83CDvaNJWV8CCOUwnrbBc6221zq78ahFnTFkVsnvAyYk12cbTiBWrWJX8T6ejT16Y0nYmSZgV/Upxm+ETBE3FDDp83GpT9uv0qeP1k/fXz/fPD9u2v3562z9aToP/y+8sj/JVg/5v4n8eXHfmn509PD/cPT9//+Wx9elRqsVtaynecqRxRj9aSg4//XvbxB3VJnabpirJ50eB6kyVihjScPsV2JAWqmUz1gDDESHaadouv8yJb8LK7fSJW1jbbxBGjee2E+OZpmAXW8XrxLW57DOrECYAvsUOtIUYY1027tuIfykps3+QTAuvwF1bB8w0vK2LSHv7Zm1cLIY0H2GEBjjWC0KCP0CRe5zFbZIXF5nBAwNKq/q8G6bJnC8D5A3fxNjjvZ0ZonFDZOLvFKYZ9/fkjAUwhl02hDnEEydMeksV6bFVxnll5slmzS8R7IN4j1not9gjNMFM3Q5bEy4LdZGKvklrLTBDNWSGIs6iKkwsaxHVgVkgbt0t+5fpN4056No3witfC6byoOXxoDp9qDjXyCE1g65qgZBaPsiRbxpHotCy/oA0cWCAct9MG/aBHaARH2QiH47BLbIQntjDcm+Dna/82a+C6asFxWsHZeXmJYuGicclD0+GNINhTC87mvKiEea4XJbapskssASx88olVX+QRmsDXNEGyFE4Kv6jPZ0K5fMCtwRtBcKARLNilXHLK+q5oMK3lkwkd4giSQ43kTGyojayZDdbMlnX3gB1B/LSP+FxswKs4umiCwzDvXOT0gR1B/EwjvkhF30AfzZON2Ntn1btLWmAKLTCVW6Av9vWbwVN7dGIrX7GcXTbn4Siay0fROsQRJKs9uEWcXzjcXRjurjTclXAjiFV7anw93ywu0grruSut5yq0EaSqfTT+y7t4HsO4g3U3K6uCOF/QeqjgnHuSc34O+ghN4WmaohIO5kVz2gN75tmyeBJvnKNoT+2qLZNsnl1yUOPA8u3Id74KtBGkqp205abjQ/bVCucyjnQuo4QbQazaPXvH5gnbz7m84FF80Y4T+ljq4t7AIzSB2kl7x4uCrWOeCn+iZBGzbuKkKi5Z0R2Y2Y40s8+CH6Ex1E7bu+yWWYe+Y40j5Q8DnF3DMHHlcUL9YM9fvH6L+Wr/bhVXMMb5mhdLnkYxE345X8I14iUjCPwfR/J/zv2FEZrE7tMkjZF/yWoKsaFcjg3tDT1CIzh9GqEe0PzjRcf8cIwrB870gh1BvNpTPIT3XNDr4Bq6Lh4t9O8Sq/YFk3hewGb0ArHgMLhy9I4KbgSxakdwHwcFY7C+UrlgWMMVZid4rQ/sCOLVrmHOcp4AR5ay9xueXGIFIVSTy6GaPYFHaAC1u5gX2fzg1c03t/FFC7sD65ojrWt9kUdoArW7WGRJYm1y7S4PTuY96WT+9O0IMtSOXpmtd97VJTMY/Fw5NFoDeH3BgdpPqzJ2mVoIAOJyAJAKbQSptkZqssh2YQARK/KLRMPwdRxZdB/cEeSrPa9juPsFssE2ycFTarwR5DZ9rYQVZZmlyKEcL62cv7cintf3nscg15bWNczQYvHjHubNq1yM7iIkTuK6kKahboGn0nLHyqy0nImVpR+tlC8bcZx2O1S7q0P0XCF1HA5nLKHpIK3ZqshyLjb0STd149gFimjIFRzxr+Uj/gaCMd1AR3eX4XAk66vIQnCh7LsdvzemGuqo7jcCfXILV3B1tpavzk4AxmSnWrL7lIEj28lERXcKdKd41sEQfGc6vutsU/KcLXqkFK5gb7qW96YNAFO2YdOY7yc7Fhpt8bQq+CHzUvz3B4t93CSN9FNbvf6txChJyUw+En6IsN/QVmncLV4VL9aQbHJYxSRxnq8WJ6Zrii6KJK6xKOd8USkTy93tab0MNF0mVsw07KOqAWysyz1Dl4daMI0lXokFIJ0qZXkDm7KwaY2zOMHDl5eCRBKnzGr8i52iaXtB2/81FZekgDMW4vcRss7gOu0MFViQMYVlLCHoI0Em7/gUeeROpothTDrsQ7rk6/jHMk4rXt/jdzqA1ODBcbg3Q1XQoMaipmpR63l98AyHFflbsREqxHboLewQ6niUXapFRyStEbaXnlwC4dzfMNY8U2veFHG0EUuVsHxi6iYM9voRMpkcSiZ6N9YH1lTZdKJUVpcW6PYW1VmwP/QCpDrBEWIIz2Bqazgf8xxk4t6E6gA0cwRHMqbv9KAvZSp4f/LXVVdPQKnBTs57AhvLc9XykixawSxNM7idkhWR/YNdfNBY1z92mKqdg1M+gazQpWYPEqbdRRlk/vg66qVoTThpZuWmYMcltruakb2FXU72wTWWFvSRdkxxKOsch04PkR4Pdjmhxhykv0KtqGwXzZ6wvEIEkVYHO8ZUwo0wr9TuRV2lRYwccDCL+KNwAbrd51Ldh0YLKwGNu26mUXPHrCgW/v6igIybzgyzqZ5Do90JtCHG4EztJ5zySbqTiZxNWJ4eCmRMXu0wnBIj8s08iaO4YkWMSAlIJVgoQg9UY12ORlc7EF7WE5J6sLhqCm2Q0eVqhOzi2SFT8RTQ3nuVw3LdtJDXX+lmag9CbNzeb2qKsN2p7/5ZxOOK9xaOXkT2gh1BvNoHOUU71wks6L6Ycn7ROFM1oPH4Vbsd+4De3pteNKmjC2LMWu1X7EpPddvdI70+LM+4i2JMW+0hdENrEQ20UcLCbzSQxoJm/QRpDorowy4fvAV/Qoi62lGRaGW1sEbs73qTVPGmRKY5eTIEk8Sb0uHEGKSxIrUncbvhy6wTgWlPrToa8ZzzICwIqC+6NYRQtWuxj7MUv93i0tHnUJ2HZXnoQY1VuX1UJcKPXtQNXe9PkeWDkoUGSPRANdaldiUOMZOd4zBCBpI8jEAYk/Y1pMWKVGD3KuSKgOVNYTDGzNXm/hCtSZ11k8en4Lh4Hh76KYENMsfDXjL6OwAerFqejwsYlPm0F/M8+7PYscxZuuq/WcDC2dR4V3eW7YnaQTgEFvQ/TMVyxjGU60uz1S5CJ/K3c7xAScSyaVRopkPSVnsGYtsc1ZdTdZWR3h2FlaohoUboLbVXUPAku90VrCx4dzi2y1421w2sJAsNZtxVai+gyNY5t6oCblJh3bXyu6irZUZ1GZajrYM0VqS2/yWXU6R6ezRooLYSz1iL2i2A3H6rzJCVYEot6ViObQdmCLNkBxrqH9k+WgXpAWolQ5PeUKhBJKh9gl2Mc4c7NRewHP4OhDHlpjOQ8yWrhIHm5IsLqpKnaG3j7oML11xhZ2oxzeDj3VaiqkOEtVVn0aLYFJppl7Sq0CIq5BBgV0EcLTk8XASw3aoyi3BNWB5HzUDVQNXK2MsCTQRjto6a7b6ScEkdCkl0seckDhBDLCetWrMIXbkesfI5FLRUOlKS+HK2TTNaZAuWNgOAo3esPjkv0acG2lxv4QZ8Jd+ANxGMufoqrnLFYTfwVGR9IHu9ksN2qxBsl+xuMvcIrL6FMJ2VHKZz+t6YZ6ji2VkJbGWjzoDqNZeCqYpsdyFQcZ0CV2IdGIJq06qV7IYVsaqSd8uf2P1zi3qAohGNPgDRVv1RmWgncYWgqXxtZAiStoLk/r5lUcQ31fGVjAnBFKuYLwEYk3X0ZKvG7LcprthTDu3vjam6CqrtNCCKJPYqzv6JlFHcx1ZVTVkC/oRK+zjypAV7j2LoN1TsVglMim/7FZUp0fbIcwWDP6NitypYdvhqHiVpjBP00ZdB3yWxW5UnZaqqpz5ONJH3iE4fGvObKvi1HvsgGhF5ZOzwmTG3lr1afWhsJoW9gTOcm02SWBDyV1i7v0eWhdUHC6ryw2FrIId2UzDXXyJaBRnb2napA+zHmyL+xUpZFIsRmTT1OW2PZ68QCVxVQpn2Tqu+IqbgZsOLXfXLrFgwVAnWU+jRXS/IEXrN0Wg+5g01u8vFZIZwqBz66uyjgXrK1bHO0d6ZThHedMpOF8WYuKchfoqXaLZ36GLtDZfCIf4ohQxjzNvX8d7kvLCqYhOt0JYPfWwJIx8WUcAZSwlIKVReDND9gz2ZWJtF+UflTMcOJnvDjjDbQ0r7Lpum0WE22mGwJAchlogzUOdMaYLHnJnmzPCxbkADsjsAxlxnaq54RkyDfIC1MNzVB2dk2AyjxZ/QWiouhu1NUle+q4esL82E0EGEoJFGajBjEaT9lhJ6mgMI6wT0khfFMKZMmt9Tis6+mVpNHmCzEwmvIVGMibsK4uX+dUG4Fdd5sRBbE6APhkgQ118dfU+pqZ2LswtXF//vYJ7aC5M/wdTSz6P0BTfuN/8MjVne9kKwQXdG7tJACgKVgnaGUT3oHV9rt9EAIy3cCCOSttcFW+6mSJHVKUa1a23xuyzZzFVSQ1jbQnlt06CNoJQ2/EUWvdsUXLeSoBEF0scj6CCdgojdMkts8ni6q7mbv10zOPPYr8z6MYolQfcEvb7uYKLSXd8Cr9mCF0y7WcYScnGMEVTZtKokytYshbLAm7Sq42/v6vBwePlnn/CHbYRc3DBgefqX/Ibp6ho4CsU8XUCumdiXxSxdwpamDtcpoyIGPpnW2IOtCDrZhX1xR+hvl1ZfLA+pGhVP+E2WZsdE451d6LE/RKtOnAU9Qht4dBtASutiV4VlP/xaezFMMRY7TQMZD1+fJn/HDjV92H7v7QStHrPRvQAWKqkGMxZBejiHLFZ0ZbEJnxNN6SWAjKmTDsshbbWVtYrq8KbYfhJNOuwFaqxpSmta5wUvd1OXxcLNgLTPRjT3bmB4+nUByzk6F32EpYF2bo4PgzEIQxB7/OyXeHHa5bvttRE7hiUe1atx+wCbdnM40YrLs6KK7+qV65iuXLOYtuU5mD40h+ekrwe2sULam9lnLZ+OJ1kje1nneGPlovogXn/AhqQ3sxCOBrR89FbQg4uJ3QirWHWW24ZldZwBbdyjpL+y4PULHom15tHuSrApBvPNwM4FvvzmGY5izJv0MfavjhEJtYc9bH0zGOLvlQ1Bj/Qi6Cz3P7TTXf+o9YVhuQucvkn0BPwIUyi4pC3QZsD9E7Tc3znYxr0d6hSWteWt02J0V1poygmJY0yddE2QugRNV9FGqPvgYfm2tr7BQNRJX+KmiMs5b533eJhHiJZWa39sSnJK+gR1hFiT4gy9BEGfJmt8akyQNOmHB9DgwoJnwpEUm8o1LyK24Np9OlpBpwfg9VejKWnQkZfP0EgT/MIQK7SjRzTuPdJ8U8+X1R6hN215m2gwBprz2xPVWBZp3W8ZDP1DfpFmFIZgIUPJQmIIIww70iHQ1U7AOszG/C8f1PrOeZUZhu440tZDrYGOKa5/fZ+z51n5R7DWt7W7O7XEHyt3e2jpkEt/xVh3qNItfukmqysrLCCwBmxg2j6f8/Unfz54Ob6LVnDojT7CQJ9qWqJTbWJ/QNke4GiPw4rke/1qWEioxh0808gq9gk0++33B4Ye3XiYx+eD7fDx9+K0sKbCZqSDcohR7t4K+ljvBLCJD/BnG9C7wMspky7LoRbIvrIGZrwxMwErSTjBy4pgUMYCHJ0AjDt6d46+yYaDGLMmfY3TI3DHB87rbcqhwElTBObk+qDCJ1+WU4Eai/J0ovblTZrbthk2/OEANpgqS6QMRJl0JdYsXbJWxdBSv93E6h3RQMbkAwX5jRirdbTEIi6rIp5v9gnAugtfrKavFu76pnBGOgVrXp4eg1V6sNA7odw70tcjKCGN+hq2otoYLbRSQOvTETTMaA2bEiLFFtro1RA8kNBDytM0PjecIs6EtMi7YLZDiRj05guzEVjNVCWUsQJbqQDiL+p5eXRRVfGsPtD3MfoojjF30jaLX8wqVnthPaJQQnDXQ8ldRyGuPvSdCWm58ywvs2gl9kbNoY8uslhlJvlz48YnrXFdp+ZQpkbjFAV1VkCAFLppAxizJQ3x6U3NtttuO+1bPnS8w1rpz6hHOilAYzGBXgy2VcV3NOAM+VNKw8ChxM6ENLTHYjoYdXSJRyvcUjDGxEm7eny7su+JK1oxn0IZYcmZ9VVWCOdMH9OHFfBVIV1foU2a6TuxY4l3hxGq2FpsFxHC5A+lya/HMx2HNmmw7+KSF+2EB2zzjz7r0v7WmCNpmEUr7MvZgzOwD+RZtN05Fz21RwtwaeCMdbSM8ftOXYzjbk1RzSeBmLK1HFN2AjDm2LTDm0T89n6cnVu3igPRG9fX1a0qt58Fv/uv3//v8/bXrfX3py9fv//zRZD+2fry9Gx9uf8sSN8/fP12/9l6fLYeP4sJvf3Ht0cxR18eH/6+xTQ0rfMdT/ma/UJKsD1HVehJOBSxg+YZlkO0dtP0itFX8S5R665+o4G4hNp99ObVEq4Lb+XrwjaENQTjUMFYUzXlyBWtRjJo0RSnVYCtw3OXYnJKlTntJYiYnSN1pPyAAm0QJbMeSrL89JwY3uRYFZDT10MQbRVYk4lGrGIQvCDG4uFvul78iS1WVQeBMKZsKyjvY7GIakWniQdcZffr8O0g7eqoSO4il0rduEWLwDU+NibpKkgeCw21KgCFKFGkxEvnc2OynoLsrn4PfkF+ak6sSN3xS2N+voKf9KD2lDAHUM1FTqEd7CltxwmUDKWaZITJQss/Hj8eZOqorNX+sqTUrJyQd3nruOhFyyCdrbJU8oPkVEtiNUIP3w7SkCojdDwL0kwacKZuZWfq9+3vX7YP//n4dQCWrsoClVUUryC0VgoS0K6cWJEvCmyItnZtpYra07eiuNjXhdCZJzD8cnZYF2UQ4k4P4u3CWdR4xorAdRCM+bo9+K75ImZppiOMFc/qQhgz9nowzvn7Df/+v5l2ZGBFbDsggwwMlT2DeKzs6D6fWM/wlkZKqskIg1BWGbjj8dPxUEaz4UHKguEYxrSbBu/PfE4XilRVtb2FlXrlBMOVi/yPfwF3upCL'
@@ -76,7 +77,13 @@ def integer(v, *, zero=False, signed=False):
 
 # Storage: the same server database is shared by all PCs opening the same URL.
 # Only an explicitly configured external backend survives replacement of the server.
-_PG_CONFIG = None
+
+
+_MAINTENANCE = contextvars.ContextVar('marketing_maintenance', default=False)
+_REQUEST_INFO = contextvars.ContextVar('marketing_request_info', default=None)
+class StorageNotInitialized(AppError): pass
+class CommitNotConfirmed(AppError): pass
+
 _EXPECTED_EPOCH = contextvars.ContextVar('marketing_expected_epoch', default=None)
 DEFAULT_SETTINGS = {'company':'MAKROPETROL C.A.', 'department':'Departamento de Marketing',
                     'warehouse':'Almacén central · Matriz',
@@ -85,114 +92,20 @@ for _name,_default in [('pools',{}),('initialized',set()),('daily_done',set())]:
     if not hasattr(_runtime,_name): setattr(_runtime,_name,_default)
 
 
-def is_cloud(): return _PG_CONFIG is not None
-
-
-def configure_storage(secrets_source=None):
-    global _PG_CONFIG
-    # Old example [postgres] secrets are ignored unless explicitly activated.
-    mode=os.environ.get('MARKETING_BACKEND','sqlite').lower()
-    cfg={}
-    if secrets_source is not None:
-        try:
-            mode=str(secrets_source.get('storage',{}).get('backend',mode)).lower()
-            if mode=='postgres': cfg=dict(secrets_source['postgres'])
-        except FileNotFoundError: pass
-        except KeyError: raise AppError('Completa [postgres] para activar el almacenamiento externo.') from None
-    if mode not in ('sqlite','postgres'): raise AppError('storage.backend debe ser sqlite o postgres.')
-    if mode=='sqlite': _PG_CONFIG=None; return
-    required=('host','dbname','user','password')
-    if any(not isinstance(cfg.get(k),str) or not cfg[k].strip() for k in required):
-        raise AppError('La conexión externa está incompleta. Completa sus datos reales una sola vez en Secrets.')
-    for k in required:
-        if any(x in cfg[k].upper() for x in ('HOST_REAL','HOST_DEL','REFERENCIA_REAL','REFERENCIA_DEL','REEMPLAZA_','CONTRASENA_REAL','CONTRASENA_DE_LA_BASE')):
-            raise AppError('La conexión externa conserva valores de ejemplo. No se ha cambiado a una base temporal.')
-    if '/' in cfg['host'] or ':' in cfg['host']: raise AppError('Usa el host de PostgreSQL, sin https:// ni rutas.')
-    port=integer(cfg.get('port',5432))
-    if port>65535: raise AppError('Puerto de conexión no válido.')
-    ssl=str(cfg.get('sslmode','require'))
-    if ssl not in ('require','verify-full','verify-ca'): raise AppError('La conexión externa requiere SSL.')
-    _PG_CONFIG={**{k:cfg[k] for k in required},'port':port,'sslmode':ssl}
-
-
-def storage_identity():
-    return hashlib.sha256(repr(sorted(_PG_CONFIG.items())).encode()).hexdigest() if is_cloud() else str(DB_PATH.resolve())
-
-
-class _Row(dict):
-    def __init__(self,names,values):
-        super().__init__(zip(names,values)); self._values=tuple(values)
-    def __getitem__(self,key): return self._values[key] if isinstance(key,int) else super().__getitem__(key)
-
-
-class _PGCursor:
-    def __init__(self,raw,lastrowid=None): self.raw=raw;self.lastrowid=lastrowid
-    def _row(self,r):
-        if r is None:return None
-        vals=[v.tobytes() if isinstance(v,memoryview) else int(v) if isinstance(v,Decimal) and v==v.to_integral_value() else v for v in r]
-        return _Row([d.name for d in self.raw.description],vals)
-    def fetchone(self):return self._row(self.raw.fetchone())
-    def fetchall(self):return [self._row(r) for r in self.raw.fetchall()]
-    def __iter__(self):
-        while True:
-            r=self.fetchone()
-            if r is None:return
-            yield r
-
-
-class _PGConnection:
-    def __init__(self,raw,pool): self.raw=raw;self.pool=pool
-    @property
-    def in_transaction(self): return self.raw.info.transaction_status != 0
-    def execute(self,sql,args=()):
-        q=sql.strip().rstrip(';')
-        if q.upper()=='BEGIN IMMEDIATE':
-            self.raw.execute('BEGIN')
-            raw=self.raw.execute('SELECT pg_advisory_xact_lock(731512026)')
-            return _PGCursor(raw)
-        if re.match(r'INSERT\s+OR\s+IGNORE\s+INTO',q,re.I):
-            q=re.sub(r'INSERT\s+OR\s+IGNORE\s+INTO','INSERT INTO',q,count=1,flags=re.I)+' ON CONFLICT DO NOTHING'
-        q=q.replace('?', '%s')
-        # SQL uses LIKE '%' literals; psycopg scans % only when parameters are present.
-        if args: q=re.sub(r'%(?!s)', '%%', q)
-        match=re.match(r'INSERT\s+INTO\s+(\w+)',q,re.I)
-        returning=bool(match and match[1] in ('brands','products','documents','lines','attachments','counts') and 'RETURNING' not in q.upper())
-        if returning:q+=' RETURNING id'
-        raw=self.raw.execute(q,tuple(args) if args else None)
-        value=raw.fetchone() if returning else None
-        return _PGCursor(raw,value[0] if value else None)
-    def executescript(self,script):
-        self.raw.execute('CREATE SCHEMA IF NOT EXISTS marketing')
-        self.raw.execute('REVOKE ALL ON SCHEMA marketing FROM PUBLIC')
-        for stmt in script.split(';'):
-            if not stmt.strip():continue
-            stmt=re.sub(r'\bid INTEGER PRIMARY KEY\b','id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY',stmt)
-            stmt=re.sub(r'\bBLOB\b','BYTEA',stmt)
-            self.raw.execute(stmt)
-    def commit(self):self.raw.commit()
-    def rollback(self):self.raw.rollback()
-    def close(self):
-        if self.raw is not None:
-            self.pool.putconn(self.raw);self.raw=None
 
 
 
-def connect():
-    if not is_cloud():
-        c=sqlite3.connect(DB_PATH,timeout=30,isolation_level=None)
-        c.row_factory=sqlite3.Row;c.execute('PRAGMA foreign_keys=ON');c.execute('PRAGMA busy_timeout=30000')
-        return c
-    from psycopg_pool import ConnectionPool
-    identity=storage_identity()
-    with LOCK:
-        if identity not in _runtime.pools:
-            _runtime.pools[identity]=ConnectionPool('',kwargs={**_PG_CONFIG,
-                'autocommit':True,'connect_timeout':10,'prepare_threshold':None,
-                'options':'-c search_path=marketing,pg_catalog -c statement_timeout=120000 -c lock_timeout=20000',
-                'application_name':'MarketingMakropetrol'},min_size=0,max_size=4,timeout=15,
-                max_idle=120,open=True,check=ConnectionPool.check_connection)
-        pool=_runtime.pools[identity]
-    return _PGConnection(pool.getconn(),pool)
+
+
+
+
+
+
+
+
+
+
+
 
 
 # transaction: defined in the storage adapter above
@@ -218,37 +131,13 @@ def save_shared_settings(data):
     return {'saved':True}
 
 
-def ensure_initialized():
-    identity=(storage_identity(),VERSION)
-    with LOCK:
-        if identity in _runtime.initialized and (is_cloud() or DB_PATH.exists()):return
-        init_db()
-        _runtime.initialized.add(identity)
 
 
-@contextmanager
-def transaction():
-    with LOCK:
-        c=connect()
-        try:
-            c.execute('BEGIN IMMEDIATE')
-            expected=_EXPECTED_EPOCH.get()
-            if expected is not None and expected!=meta(c,'storage_epoch'):
-                raise AppError('El almacén fue restaurado. Actualiza la pantalla antes de guardar.')
-            yield c
-            c.commit()
-        except BaseException:
-            c.rollback()
-            raise
-        finally: c.close()
 
 
-@contextmanager
-def reading():
-    with LOCK:
-        c=connect()
-        try: yield c
-        finally: c.close()
+
+
+
 
 def rows(c, sql, args=()): return [dict(r) for r in c.execute(sql,args).fetchall()]
 def meta(c,key,default=''):
@@ -487,84 +376,13 @@ def submit_test_order(data):
     return {'id':did,'reused':False,'is_test':True,'stock_changed':False}
 
 
-def init_db():
-    DATA_DIR.mkdir(parents=True,exist_ok=True)
-    with transaction() as c:
-        c.executescript('''
-        CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS brands(id INTEGER PRIMARY KEY,name TEXT NOT NULL,normalized TEXT UNIQUE NOT NULL,logo BLOB);
-        CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY,code TEXT UNIQUE NOT NULL,brand_id INTEGER NOT NULL REFERENCES brands(id),
-          name TEXT NOT NULL,normalized TEXT NOT NULL,source TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '',created_day TEXT NOT NULL,
-          UNIQUE(brand_id,normalized));
-        CREATE TABLE IF NOT EXISTS documents(id INTEGER PRIMARY KEY,number TEXT UNIQUE,kind TEXT NOT NULL,day TEXT NOT NULL,
-          recipient TEXT NOT NULL DEFAULT '',operator TEXT NOT NULL,note TEXT NOT NULL DEFAULT '',reference TEXT NOT NULL DEFAULT '',
-          request_key TEXT NOT NULL UNIQUE,payload_hash TEXT NOT NULL,input_hash TEXT,related_id INTEGER REFERENCES documents(id),
-          reversed_by INTEGER REFERENCES documents(id),created_at TEXT NOT NULL);
-        CREATE UNIQUE INDEX IF NOT EXISTS import_once ON documents(input_hash) WHERE input_hash IS NOT NULL;
-        CREATE TABLE IF NOT EXISTS lines(id INTEGER PRIMARY KEY,document_id INTEGER NOT NULL REFERENCES documents(id),
-          product_id INTEGER NOT NULL REFERENCES products(id),quantity INTEGER NOT NULL,delta INTEGER NOT NULL,
-          disposition TEXT NOT NULL DEFAULT '');
-        CREATE INDEX IF NOT EXISTS line_product ON lines(product_id);
-        CREATE INDEX IF NOT EXISTS doc_day ON documents(day,id);
-        CREATE TABLE IF NOT EXISTS attachments(id INTEGER PRIMARY KEY,document_id INTEGER NOT NULL REFERENCES documents(id),
-          name TEXT NOT NULL,mime TEXT NOT NULL,sha256 TEXT NOT NULL,data BLOB NOT NULL,created_at TEXT NOT NULL,
-          UNIQUE(document_id,sha256));
-        CREATE TABLE IF NOT EXISTS counts(id INTEGER PRIMARY KEY,document_id INTEGER NOT NULL REFERENCES documents(id),
-          day TEXT NOT NULL,data_json TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS closures(month TEXT PRIMARY KEY,data_json TEXT NOT NULL,created_at TEXT NOT NULL,operator TEXT NOT NULL);
-        ''')
-        # executescript puede cerrar la transacción; iniciar otra para la carga atómica.
-        if not c.in_transaction: c.execute('BEGIN IMMEDIATE')
-        schema=meta(c,'schema')
-        if schema and schema!='1': raise AppError('Esta base pertenece a otra versión. No se modificó.')
-        if not meta(c,'seeded'):
-            if c.execute('SELECT COUNT(*) FROM products').fetchone()[0]:
-                raise AppError('Hay un catálogo sin marcador de apertura. Recupera el respaldo; no se recargó inventario.')
-            seed=json.loads(zlib.decompress(base64.b64decode(SEED_B64)))
-            doc=c.execute('''INSERT INTO documents(kind,day,operator,note,request_key,payload_hash,created_at)
-                VALUES ('APERTURA',?,'Inventario físico inicial',?,'apertura-v1','seed',?)''',
-                (OPENING_DAY,'Conteo confirmado por Angeluis. Blancos y guiones = agotado. No se importan movimientos históricos.',now_iso())).lastrowid
-            c.execute('UPDATE documents SET number=? WHERE id=?',(f'AP-{doc:06}',doc))
-            counted=[]
-            for p in seed:
-                c.execute('INSERT OR IGNORE INTO brands(name,normalized) VALUES (?,?)',(p['brand'],norm(p['brand'])))
-                bid=c.execute('SELECT id FROM brands WHERE normalized=?',(norm(p['brand']),)).fetchone()[0]
-                pid=c.execute('''INSERT INTO products(code,brand_id,name,normalized,source,note,created_day)
-                   VALUES (?,?,?,?,?,?,?)''',(p['code'],bid,p['name'],norm(p['name']),p['source'],p['note'],OPENING_DAY)).lastrowid
-                c.execute('INSERT INTO lines(document_id,product_id,quantity,delta) VALUES (?,?,?,?)',(doc,pid,p['qty'],p['qty']))
-                counted.append({'id':pid,'code':p['code'],'brand':p['brand'],'name':p['name'],'expected':p['qty'],'counted':p['qty'],'difference':0})
-            c.execute('INSERT INTO counts(document_id,day,data_json) VALUES (?,?,?)',(doc,OPENING_DAY,json.dumps(counted,ensure_ascii=False)))
-            for k,v in [('seeded','1'),('schema','1'),('revision','1'),('opening_day',OPENING_DAY),('app_version',VERSION),('source',SOURCE_NAME)]: put_meta(c,k,v)
-        if not meta(c, 'storage_epoch'):
-            put_meta(c, 'storage_epoch', uuid.uuid4().hex)
-        put_meta(c, 'app_version', VERSION)
-    with transaction() as c:
-        c.execute('CREATE INDEX IF NOT EXISTS line_document ON lines(document_id)')
-        c.execute('CREATE INDEX IF NOT EXISTS doc_related ON documents(related_id,kind,reversed_by)')
-        c.execute('CREATE INDEX IF NOT EXISTS attach_document ON attachments(document_id)')
-        c.execute('CREATE INDEX IF NOT EXISTS doc_recipient ON documents(recipient,day)')
-        if not meta(c,'shared_settings'):
-            put_meta(c,'shared_settings',json.dumps(DEFAULT_SETTINGS,ensure_ascii=False))
-        put_meta(c,'app_version',VERSION)
-        reconcile_catalog(c)
-    if not is_cloud(): daily_backup()
 
 
 def daily_backup():
-    if is_cloud(): return
-    # One check per day/process; do not rebuild backup on every Streamlit rerun.
-    marker=('daily',str(DB_PATH),today().isoformat())
-    if marker in _runtime.daily_done: return
-    folder=DATA_DIR/'respaldos'; folder.mkdir(parents=True,exist_ok=True)
-    dest=folder/f'marketing_{today().isoformat()}.sqlite3'
-    if not dest.exists():
-        with LOCK:
-            src=connect(); out=sqlite3.connect(str(dest)+'.tmp')
-            try: src.backup(out)
-            finally: out.close();src.close()
-            os.replace(str(dest)+'.tmp',dest)
-        for old in sorted(folder.glob('marketing_*.sqlite3'))[:-14]: old.unlink(missing_ok=True)
-    _runtime.daily_done.add(marker)
+    # La copia de inicio de jornada se hace en la base externa desde transaction().
+    # Nunca se presenta un archivo de /tmp como respaldo persistente.
+    return
+
 
 
 def check_day(c,value):
@@ -783,7 +601,7 @@ def snapshot():
             'documents':docs,'tests':tests,'keystone_quantities_applied':bool(meta(c,KEYSTONE_IMPORT_META)), 'catalog_check':catalog_check(c,products),'events':events,'closures':rows(c,'SELECT month,operator,created_at FROM closures ORDER BY month DESC'),
             'operators':[r[0] for r in c.execute("SELECT DISTINCT operator FROM documents WHERE kind NOT IN ('APERTURA','PRUEBA') ORDER BY operator")],
             'recipients':[r[0] for r in c.execute("SELECT DISTINCT recipient FROM documents WHERE recipient!='' AND kind!='PRUEBA' ORDER BY recipient")],
-            'data_path':'PostgreSQL externo' if is_cloud() else 'Archivo del servidor (respaldo necesario)',
+            'data_path':'Cloudflare D1 + R2 · almacén compartido',
             'storage_epoch':meta(c,'storage_epoch'),'last_count':dict(count) if count else None,
             'cloud':is_cloud(),'settings':shared_settings(c),'company_logo':'data:image/png;base64,'+logo}
 
@@ -1294,8 +1112,8 @@ def all_reports_zip(month):
 
 
 # ---------------------------------------------------------------------------
-# Respaldo y recuperación. SQLite compartido entre las sesiones del servidor.
-# No se utiliza ninguna cuenta, API key, contraseña ni Secrets de Streamlit.
+# Respaldo y recuperación. Copia portable del almacén externo.
+# Los respaldos portátiles usan SQLite solo como formato de exportación/importación.
 # ---------------------------------------------------------------------------
 MAX_BACKUP_BYTES = 150 * 1024 * 1024
 BACKUP_TABLES = ('meta', 'brands', 'products', 'documents', 'lines', 'attachments', 'counts', 'closures')
@@ -1322,6 +1140,8 @@ def storage_status():
             'references': c.execute('SELECT COUNT(*) FROM products').fetchone()[0],
             'units': c.execute('SELECT COALESCE(SUM(delta),0) FROM lines').fetchone()[0],
             'last_restore': meta(c, 'last_restore'),
+            'last_saved_at': meta(c, 'last_saved_at'),
+            'database_id': meta(c, 'database_id'),
         }
 
 
@@ -1398,6 +1218,9 @@ def validated_backup(blob):
         for row in source.execute('SELECT month,data_json FROM closures'):
             value = json.loads(row['data_json'])
             if not isinstance(value, dict): raise AppError('Un cierre del respaldo no es válido.')
+        for attachment in source.execute('SELECT sha256,data FROM attachments'):
+            if hashlib.sha256(bytes(attachment['data'])).hexdigest()!=attachment['sha256']:
+                raise AppError('Un archivo adjunto no coincide con su huella. No se importó un respaldo alterado.')
         summary = {
             'references': source.execute('SELECT COUNT(*) FROM products').fetchone()[0],
             'units': source.execute('SELECT COALESCE(SUM(delta),0) FROM lines').fetchone()[0],
@@ -1424,86 +1247,14 @@ def inspect_backup(blob):
         return summary
 
 
-def restore_backup(blob,expected_revision,expected_epoch):
-    """Explicit full-state replacement. Reject stale previews; never merge openings."""
-    with validated_backup(blob) as (source,summary):
-        with LOCK:
-            previous=backup_zip();folder=DATA_DIR/'respaldos';folder.mkdir(parents=True,exist_ok=True)
-            filename='antes_restaurar_'+uuid.uuid4().hex[:12]+'.zip';(folder/filename).write_bytes(previous)
-            if is_cloud():
-                with transaction() as c:
-                    if int(meta(c,'revision','0'))!=expected_revision or meta(c,'storage_epoch')!=expected_epoch:
-                        raise AppError('El almacén cambió. Prepara una nueva vista previa antes de restaurar.')
-                    c.execute('UPDATE documents SET related_id=NULL,reversed_by=NULL')
-                    for table in ('attachments','counts','lines','closures','documents','products','brands','meta'):
-                        c.execute(f'DELETE FROM {table}')
-                    links=[]
-                    for table,cols in REQUIRED_COLUMNS.items():
-                        columns=','.join(cols)
-                        data=source.execute(f'SELECT {columns} FROM {table}').fetchall()
-                        for row in data:
-                            values=dict(row)
-                            if table=='documents':
-                                links.append((values['related_id'],values['reversed_by'],values['id']))
-                                values['related_id']=None;values['reversed_by']=None
-                            c.execute(f"INSERT INTO {table} ({columns}) VALUES ({','.join('?' for _ in cols)})",tuple(values[k] for k in cols))
-                    for related,reversed_,did in links:c.execute('UPDATE documents SET related_id=?,reversed_by=? WHERE id=?',(related,reversed_,did))
-                    for table in ('brands','products','documents','lines','attachments','counts'):
-                        c.raw.execute(f"SELECT setval(pg_get_serial_sequence('marketing.{table}','id'),COALESCE(MAX(id),1),COUNT(*)>0) FROM marketing.{table}")
-                    put_meta(c,'storage_epoch',uuid.uuid4().hex);put_meta(c,'last_restore',now_iso())
-                    put_meta(c,'last_restore_hash',summary['sha256']);put_meta(c,'revision',max(expected_revision,int(meta(c,'revision','0')))+1)
-                    put_meta(c,'app_version',VERSION)
-            else:
-                current=storage_status()
-                if current['revision']!=expected_revision or current['epoch']!=expected_epoch:
-                    raise AppError('El almacén cambió. Prepara una nueva vista previa antes de restaurar.')
-                dest=connect()
-                try:source.backup(dest,pages=128)
-                finally:dest.close()
-                with transaction() as c:
-                    put_meta(c,'storage_epoch',uuid.uuid4().hex);put_meta(c,'last_restore',now_iso())
-                    put_meta(c,'last_restore_hash',summary['sha256']);put_meta(c,'revision',max(expected_revision,int(meta(c,'revision','0')))+1)
-                    put_meta(c,'app_version',VERSION)
-            with transaction() as c:reconcile_catalog(c)
-            return {**summary,'previous_backup':filename}
+# Implementación 1.6 más abajo: restore_backup
 
 
 
 
-def backup_zip():
-    """Portable SQLite backup for both storage backends; consistent snapshot."""
-    with LOCK:
-        fd,path=tempfile.mkstemp(prefix='marketing_respaldo_',suffix='.sqlite3');os.close(fd)
-        dest=sqlite3.connect(path)
-        try:
-            if not is_cloud():
-                src=connect()
-                try:src.backup(dest)
-                finally:src.close()
-            else:
-                dest.executescript(SQLITE_SCHEMA)
-                with reading() as c:
-                    for table,cols in REQUIRED_COLUMNS.items():
-                        names=','.join(cols);values=rows(c,f'SELECT {names} FROM {table}')
-                        if values:dest.executemany(f"INSERT INTO {table} ({names}) VALUES ({','.join('?' for _ in cols)})",[tuple(r[k] for k in cols) for r in values])
-                    dest.commit()
-            # Read metadata from the copy, never from a second changing snapshot.
-            dest.row_factory=sqlite3.Row
-            manifest={'application':'Makropetrol Marketing','version':VERSION,'created_at':now_iso(),
-                'storage':'postgres' if is_cloud() else 'sqlite','revision':int(meta(dest,'revision','0')),
-                'references':dest.execute('SELECT COUNT(*) FROM products').fetchone()[0],
-                'documents':dest.execute('SELECT COUNT(*) FROM documents').fetchone()[0]}
-            dest.close();dest=None
-            out=io.BytesIO()
-            with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
-                z.write(path,'marketing.sqlite3');z.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2))
-                z.writestr('RESTAURAR.txt','Marketing: abre el panel Respaldos y conexión, revisa y confirma la restauración.\n'
-                    'Este ZIP contiene datos, firmas, logos y ajustes. No suma inventarios.\n'
-                    'Guarda una copia del estado actual ANTES de reemplazarlo. Un Excel/PDF no es un respaldo.\n')
-            return out.getvalue()
-        finally:
-            if dest is not None:dest.close()
-            Path(path).unlink(missing_ok=True)
+
+# Implementación 1.6 más abajo: backup_zip
+
 
 
 # MENSAJES DEL COMPONENTE
@@ -1923,7 +1674,7 @@ function settings(){const cfg=S.settings;$('content').innerHTML=header('Ayuda y 
 <button class="btn primary" style="margin-top:16px">Guardar ajustes para el equipo</button><div id="settingsResult"></div></form></div>
 <div class="card"><h2>Fichas y firmas</h2><p class="small" style="line-height:1.8">Confirma la entrega, descarga la ficha PDF con el logo y solicita la firma del asesor. Conserva el papel; también puedes adjuntar una foto o un PDF. Adjuntar o reimprimir no vuelve a descontar cantidades. La app registra el adjunto, pero no verifica que esté firmado.</p><button class="btn soft" onclick="go('sellers')">Consultar entregas por asesor</button></div></div>
 <div><div class="card"><h2>Logos</h2><p class="small">El logo original de Makropetrol ya está incorporado. Puedes reemplazarlo o agregar el de cada proveedor.</p><div class="field"><label>Destino del logo</label><select id="logoBrand"><option value="0">Makropetrol · fichas y gerencia</option>${brandOptions(false)}</select></div><div class="dropzone" style="margin-top:15px">Logo en PNG o JPG<input type="file" accept=".png,.jpg,.jpeg" onchange="uploadLogo(this.files[0])"></div><div id="logoMessage"></div></div>
-<div class="card"><h2>Guardado y respaldo</h2><div class="notice ${S.cloud?'':'warn'}">${S.cloud?'Base PostgreSQL externa conectada. Todas las PC que abran esta misma app trabajan con el mismo inventario, logos y ajustes.':'Los datos están en el servidor de esta app y se comparten entre sus visitantes, pero Streamlit puede perderlos al recrear el servidor. El guardado permanente externo todavía NO está activado. Descarga un respaldo antes de actualizar y al terminar la jornada.'}</div><button class="btn primary" onclick="download('/api/backup')">Descargar respaldo completo</button><p class="small" style="line-height:1.7">Para recuperar una copia o activar la base externa abre el panel cerrado “Respaldos y conexión” debajo del espacio de trabajo. Sin inicio de sesión, cualquier visitante autorizado por el alojamiento puede modificar el inventario.</p></div>
+<div class="card"><h2>Guardado y respaldo</h2><div class="notice ${S.cloud?'':'warn'}">${S.cloud?'Base Cloudflare D1 + R2 externa conectada. Todas las PC que abran esta misma app trabajan con el mismo inventario, logos y ajustes.':'Los datos están en el servidor de esta app y se comparten entre sus visitantes, pero Streamlit puede perderlos al recrear el servidor. El guardado permanente externo todavía NO está activado. Descarga un respaldo antes de actualizar y al terminar la jornada.'}</div><button class="btn primary" onclick="download('/api/backup')">Descargar respaldo completo</button><p class="small" style="line-height:1.7">Para descargar copias, recuperar datos o revisar puntos de recuperación abre “Guardado externo · respaldos y recuperación” debajo del espacio de trabajo. Sin inicio de sesión, cualquier visitante autorizado por el alojamiento puede modificar el inventario.</p></div>
 <div class="card"><h2>Carga de cantidades</h2><p class="small">Usa la plantilla para entradas o salidas. Crea los artículos nuevos primero; no vuelvas a cargar el conteo de apertura como si fuera una recepción.</p><button class="btn soft" onclick="download('/api/template?mode=movement')">Descargar plantilla</button></div></div></div><div class="small">Versión ${esc(S.version)} · Un almacén · Cantidades por marca y artículo.</div>`;
 $('settingsForm').onsubmit=async e=>{e.preventDefault();const btn=e.target.querySelector('button');btn.disabled=true;try{await api('/api/settings',{company:$('setCompany').value,department:$('setDepartment').value,warehouse:$('setWarehouse').value,receipt_note:$('setNote').value});await refresh();toast('Ajustes compartidos guardados.')}catch(er){toast(er.message,true)}finally{btn.disabled=false}}}
 async function uploadLogo(file){try{await api('/api/logo',{...await readFile(file),brand_id:$('logoBrand').value});await refresh();toast('Logo guardado para el equipo y sus fichas.')}catch(e){$('logoMessage').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
@@ -1955,43 +1706,367 @@ BRIDGE_JS = "/* Streamlit v1 component protocol. No database credentials or inve
 
 # ---------------------------------------------------------------------------
 # Entrada Streamlit. Todo el código y catálogo están en este mismo archivo.
-# No pide contraseña; no lee Secrets; no crea servicios externos.
+# Sin login de usuarias. La conexión técnica usa Secrets y Cloudflare D1 + R2.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Persistencia 1.6. La base principal y los puntos de recuperación están fuera
+# del proceso de Streamlit. Los puntos son del MISMO proveedor, no un segundo
+# respaldo independiente: sigue siendo recomendable exportar una copia externa.
+# ---------------------------------------------------------------------------
+# Conexión incorporada por el propietario; no se muestra la clave en la UI.
+
+
+
+
+
+
+def initialize_explicit_opening(confirmation):
+    if confirmation!='INICIAR SIN HISTORIAL ANTERIOR':
+        raise AppError('Escribe INICIAR SIN HISTORIAL ANTERIOR para autorizar una apertura nueva, sin recuperar datos perdidos.')
+    prepare_schema();token=_MAINTENANCE.set(True)
+    try:
+        with transaction() as c:
+            if any(c.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in BACKUP_TABLES):
+                raise AppError('La base ya tiene información. No se reemplazó ni se recargó la apertura.')
+            did=c.execute("INSERT INTO documents(kind,day,operator,note,request_key,payload_hash,created_at) VALUES(?,?,?,?,?,?,?)",
+                ('APERTURA',OPENING_DAY,'Apertura explícita autorizada','No contiene movimientos anteriores; no es recuperación.',
+                 'apertura-v1','seed',now_iso())).lastrowid
+            c.execute('UPDATE documents SET number=? WHERE id=?',(f'AP-{did:06}',did));counted=[]
+            for product in seed_catalog():
+                c.execute('INSERT OR IGNORE INTO brands(name,normalized) VALUES(?,?)',(product['brand'],norm(product['brand'])))
+                bid=c.execute('SELECT id FROM brands WHERE normalized=?',(norm(product['brand']),)).fetchone()[0]
+                pid=c.execute('INSERT INTO products(code,brand_id,name,normalized,source,note,created_day) VALUES(?,?,?,?,?,?,?)',
+                    (product['code'],bid,product['name'],norm(product['name']),product['source'],product['note'],OPENING_DAY)).lastrowid
+                c.execute('INSERT INTO lines(document_id,product_id,quantity,delta) VALUES(?,?,?,?)',(did,pid,product['qty'],product['qty']))
+                counted.append({'id':pid,'code':product['code'],'brand':product['brand'],'name':product['name'],
+                                'expected':product['qty'],'counted':product['qty'],'difference':0})
+            c.execute('INSERT INTO counts(document_id,day,data_json) VALUES(?,?,?)',(did,OPENING_DAY,json.dumps(counted,ensure_ascii=False)))
+            for k,v in [('seeded','1'),('schema','1'),('revision','1'),('opening_day',OPENING_DAY),
+                ('app_version',VERSION),('source',SOURCE_NAME),('storage_epoch',uuid.uuid4().hex),
+                ('database_id',uuid.uuid4().hex),('opening_confirmed_at',now_iso()),('last_saved_at',now_iso()),
+                ('shared_settings',json.dumps(DEFAULT_SETTINGS,ensure_ascii=False))]:put_meta(c,k,v)
+    finally:_MAINTENANCE.reset(token)
+    return storage_status()
+
+
+
+def _export_from_connection(c):
+    """Copia todas las tablas desde la MISMA transacción de lectura/escritura."""
+    fd,path=tempfile.mkstemp(prefix='marketing_durable_',suffix='.sqlite3');os.close(fd)
+    dest=sqlite3.connect(path)
+    try:
+        dest.executescript(SQLITE_SCHEMA)
+        for table,cols in REQUIRED_COLUMNS.items():
+            names=','.join(cols)
+            query=c.execute(f'SELECT {names} FROM {table}')
+            batch=[]
+            for row in query:
+                batch.append(tuple(row[k] for k in cols))
+                if len(batch)>=200:
+                    dest.executemany(f"INSERT INTO {table} ({names}) VALUES ({','.join('?' for _ in cols)})",batch);batch=[]
+            if batch:dest.executemany(f"INSERT INTO {table} ({names}) VALUES ({','.join('?' for _ in cols)})",batch)
+        dest.commit()
+        if dest.execute('PRAGMA foreign_key_check').fetchone():
+            raise AppError('El respaldo no pasó la validación de referencias. No se emitió una copia incompleta.')
+        manifest={'application':'Makropetrol Marketing','version':VERSION,'created_at':now_iso(),
+            'storage':'cloudflare-d1-r2',
+            'revision':int(meta(c,'revision','0')),'tables':{t:dest.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in BACKUP_TABLES}}
+        dest.close();dest=None
+        if Path(path).stat().st_size>MAX_BACKUP_BYTES:
+            raise AppError('La base supera el límite del respaldo integrado. Amplía la estrategia de respaldos antes de seguir.')
+        manifest['database_sha256']=hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        out=io.BytesIO()
+        with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
+            z.write(path,'marketing.sqlite3')
+            z.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2))
+            z.writestr('LEEME.txt','Respaldo COMPLETO de datos del almacén. Incluye productos, movimientos reales y de prueba, '
+                'conteos, cierres, adjuntos firmados, logos, ajustes, auditoría y archivos generados archivados.\n'
+                'Los puntos de recuperación del proveedor no se incluyen recursivamente.\n'
+                'Un reporte Excel/PDF no sustituye esta copia.\n')
+        return out.getvalue()
+    finally:
+        if dest is not None:dest.close()
+        Path(path).unlink(missing_ok=True)
+
+
+
+
+
+
+def backup_zip():
+    with reading() as c:
+        if meta(c,'seeded')!='1':raise AppError('La base todavía no está inicializada. Rescata el respaldo anterior.')
+        return _export_from_connection(c)
+
+
+
+
+
+
+def _table_hash(connection,table,columns):
+    h=hashlib.sha256()
+    def value(v):
+        if isinstance(v,(bytes,bytearray,memoryview)):return {'bytes':base64.b64encode(bytes(v)).decode()}
+        if isinstance(v,Decimal) and v==v.to_integral_value():return int(v)
+        return v
+    for row in connection.execute(f"SELECT {','.join(columns)} FROM {table} ORDER BY {columns[0]}"):
+        h.update(json.dumps([value(row[k]) for k in columns],ensure_ascii=False,separators=(',',':')).encode());h.update(b'\n')
+    return h.hexdigest()
+
+
+def _copy_verified(source,c):
+    """Copiar IDs, binarios y textos, luego comprobar TODOS los campos antes de commit."""
+    links=[]
+    for table,cols in REQUIRED_COLUMNS.items():
+        names=','.join(cols)
+        for row in source.execute(f'SELECT {names} FROM {table}'):
+            values=dict(row)
+            if table=='documents':
+                links.append((values['related_id'],values['reversed_by'],values['id']))
+                values['related_id']=None;values['reversed_by']=None
+            c.execute(f"INSERT INTO {table} ({names}) VALUES ({','.join('?' for _ in cols)})",tuple(values[k] for k in cols))
+    for related,reversed_,did in links:
+        c.execute('UPDATE documents SET related_id=?,reversed_by=? WHERE id=?',(related,reversed_,did))
+    for table,cols in REQUIRED_COLUMNS.items():
+        if _table_hash(source,table,cols)!=_table_hash(c,table,cols):
+            raise AppError(f'La verificación completa falló en {table}. La importación se revierte.')
+
+
+def import_into_empty(blob):
+    prepare_schema()
+    with validated_backup(blob) as (source,summary):
+        token=_MAINTENANCE.set(True)
+        try:
+            with transaction() as c:
+                if any(c.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in BACKUP_TABLES):
+                    raise AppError('La base externa ya tiene datos. No se mezcló ni se sobrescribió información.')
+                _copy_verified(source,c)
+                put_meta(c,'storage_epoch',uuid.uuid4().hex)
+                put_meta(c,'database_id',uuid.uuid4().hex)
+                put_meta(c,'migration_source_hash',summary['sha256'])
+                put_meta(c,'migration_verified_at',now_iso())
+                put_meta(c,'last_saved_at',now_iso());put_meta(c,'app_version',VERSION)
+                bump(c)
+        finally:_MAINTENANCE.reset(token)
+    # Abrir OTRA conexión después de confirmar, no verificar solo en memoria.
+    with reading() as c:
+        if meta(c,'migration_source_hash')!=summary['sha256']:
+            raise AppError('No se pudo comprobar la importación desde una segunda conexión. No repitas la apertura.')
+        result={'verified':True,'tables':{t:c.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in BACKUP_TABLES}}
+    return {**summary,**result}
+
+
+def restore_backup(blob,expected_revision,expected_epoch):
+    """Restauración explícita; guardar el estado anterior FUERA de Streamlit."""
+    with validated_backup(blob) as (source,summary):
+        token=_MAINTENANCE.set(True)
+        try:
+            with transaction() as c:
+                if int(meta(c,'revision','0'))!=expected_revision or meta(c,'storage_epoch')!=expected_epoch:
+                    raise AppError('Hay cambios posteriores a la vista previa. Revisa el estado antes de restaurar.')
+                database_id=meta(c,'database_id') or uuid.uuid4().hex
+                saved=_checkpoint(c,'antes_restaurar')
+                c.execute('UPDATE documents SET related_id=NULL,reversed_by=NULL')
+                for table in ('attachments','counts','lines','closures','documents','products','brands','meta'):
+                    c.execute(f'DELETE FROM {table}')
+                _copy_verified(source,c)
+                put_meta(c,'storage_epoch',uuid.uuid4().hex);put_meta(c,'database_id',database_id)
+                put_meta(c,'last_restore',now_iso());put_meta(c,'last_restore_hash',summary['sha256'])
+                put_meta(c,'revision',max(expected_revision,int(meta(c,'revision','0')))+1)
+                put_meta(c,'app_version',VERSION);put_meta(c,'last_saved_at',now_iso())
+        finally:_MAINTENANCE.reset(token)
+    return {**summary,'previous_checkpoint':saved,'verified':True}
+
+
+def rescue_local_backup(path=None):
+    """Rescatar lo que aún exista, SIN inicializar ni modificar ese SQLite."""
+    path=Path(path or DB_PATH)
+    if not path.is_file():raise AppError('No existe un archivo local que rescatar en esta ejecución.')
+    src=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)
+    fd,tmp=tempfile.mkstemp(suffix='.sqlite3');os.close(fd)
+    dst=sqlite3.connect(tmp)
+    try:
+        src.backup(dst);dst.close();dst=None
+        raw=Path(tmp).read_bytes()
+        with validated_backup(raw) as (_,summary):pass
+        out=io.BytesIO()
+        with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
+            z.writestr('marketing.sqlite3',raw)
+            z.writestr('RESCATE.txt','Copia íntegra del archivo local existente. No se creó una apertura nueva.\n')
+        return out.getvalue(),summary
+    finally:
+        if dst is not None:dst.close()
+        src.close();Path(tmp).unlink(missing_ok=True)
+
+
+def archive_output(blob,name,mime):
+    """Guardar también el archivo generado, no solo sus datos de cálculo."""
+    sha=hashlib.sha256(blob).hexdigest();key='file:'+sha
+    with reading() as c:
+        if meta(c,key):return
+    entry={'name':name,'mime':mime,'created_at':now_iso(),'sha256':sha,'data':base64.b64encode(blob).decode()}
+    with transaction() as c:
+        if not meta(c,key):put_meta(c,key,json.dumps(entry,ensure_ascii=False));bump(c)
+
+
+_dispatch_v151=dispatch
+
+def dispatch(request):
+    body=request.get('data') if isinstance(request.get('data'),dict) else {}
+    token=_REQUEST_INFO.set({'path':str(request.get('path',''))[:200],'id':str(request.get('id',''))[:100],
+                             'operator':str(body.get('operator',''))[:200]})
+    try:
+        result=_dispatch_v151(request)
+        path=urlparse(str(request.get('path',''))).path
+        archive_routes={'/api/receipt','/api/report-file','/api/sellers-file','/api/all-reports'}
+        if result.get('status')==200 and result.get('encoding')=='base64' and path in archive_routes:
+            headers=result.get('headers',{})
+            match=re.search('filename="([^"]+)"',headers.get('Content-Disposition',''))
+            name=match.group(1) if match else 'Archivo_marketing'
+            archive_output(base64.b64decode(result['body']),name,headers.get('Content-Type','application/octet-stream'))
+        if result.get('status')==200 and request.get('method')=='POST' and path!='/api/import':
+            result.setdefault('headers',{})['X-Marketing-Storage']='cloudflare-committed'
+        return result
+    except AppError as exc:
+        return {'id':request.get('id'),'status':503,'body':{'error':str(exc)}}
+    except Exception as exc:
+        logging.getLogger('marketing').error('Guardado/archivo no confirmado: %s',type(exc).__name__)
+        return {'id':request.get('id'),'status':503,'body':{'error':'No se pudo confirmar el guardado externo. '
+            'Consulta el historial antes de repetir una ficha. No se utilizó almacenamiento temporal.'}}
+    finally:_REQUEST_INFO.reset(token)
+
+
+def migrate_existing_local_if_empty():
+    """Rescata únicamente la base local actual. Nunca sobreescribe la remota."""
+    status = cf_status()
+    if status.get('revision', 0) != 0:
+        return None
+    if not DB_PATH.is_file():
+        return None
+    blob, summary = rescue_local_backup(DB_PATH)
+    # Keep the original intact. Persist the complete rescue copy to R2 BEFORE import.
+    digest = cf_put_blob(blob)
+    imported = import_into_empty(blob)
+    return {**imported, 'source': 'base_local_actual', 'rescue_sha256': digest,
+            'references': summary.get('references'), 'documents': summary.get('documents')}
+
+
 def run_streamlit():
     import streamlit as st
     import streamlit.components.v1 as components
     st.set_page_config(page_title='Marketing · Makropetrol',page_icon='📦',layout='wide',initial_sidebar_state='collapsed')
-    st.markdown('''<style>
-    .stApp{background:#f7f5fa;color:#302340}.block-container{padding:.35rem .6rem .5rem;max-width:none}
-    [data-testid="stHeader"]{background:transparent;height:0}
+    st.markdown('''<style>.stApp{background:#f7f5fa;color:#302340}
+    .block-container{padding:.35rem .6rem .5rem;max-width:none}
     [data-testid="stExpander"]{background:white;border-radius:14px}
-    iframe[title^="marketing"]{border:0;border-radius:14px}
-    </style>''',unsafe_allow_html=True)
+    iframe[title^="marketing"]{border:0;border-radius:14px}</style>''',unsafe_allow_html=True)
+
+    def recovery_tools(prefix):
+        # Nunca ejecutar init_db() sobre los archivos que se desean rescatar.
+        local_paths=([DB_PATH] if DB_PATH.is_file() else [])
+        if (DATA_DIR/'respaldos').is_dir():
+            local_paths+=sorted((DATA_DIR/'respaldos').glob('*.sqlite3'),reverse=True)
+        if local_paths:
+            st.warning('Se encontraron archivos del guardado anterior. Descarga una copia ANTES de actualizar o reiniciar.')
+            chosen=st.selectbox('Archivo que todavía existe en este servidor',local_paths,format_func=lambda x:x.name,key=prefix+'_path')
+            if st.button('Preparar rescate sin modificar el original',key=prefix+'_prepare'):
+                try:
+                    blob,info=rescue_local_backup(chosen)
+                    st.session_state[prefix+'_blob']=blob
+                    st.session_state[prefix+'_info']=info
+                except AppError as exc:st.error(str(exc))
+            if st.session_state.get(prefix+'_blob'):
+                info=st.session_state[prefix+'_info']
+                st.write(f"{info['references']} productos · {info['documents']} fichas · {info['attachments']} adjuntos")
+                st.download_button('Descargar copia de rescate',st.session_state[prefix+'_blob'],
+                    'Rescate_Marketing.zip','application/zip',key=prefix+'_download')
+        else:
+            st.info('Aquí no se encontró el archivo local anterior. Usa un respaldo descargado o la base de la PC donde se registraron los datos. '
+                    'La apertura original no contiene entregas registradas después.')
+
+    def worker_tools():
+        st.write('Tu enlace y la clave ya están incorporados. No tienes que abrir Secrets ni introducir otra clave.')
+        st.write('Si el Worker aún es el comprobador anterior: Cloudflare → makropetrol-marketing-api → '
+                 'Editar código → sustituir por el siguiente código → Implementar. Conserva DB, FILES y MARKETING_API_TOKEN.')
+        st.download_button('Descargar código para Cloudflare', CLOUDFLARE_WORKER_JS,
+                           file_name='worker.js', mime='text/javascript', key='worker171_download')
+        with st.expander('Mostrar código del Worker para copiar', expanded=False):
+            st.code(CLOUDFLARE_WORKER_JS, language='javascript')
+        if st.button('Ya publiqué el Worker · volver a comprobar', key='worker171_retry'):
+            st.rerun()
+
+    def setup_ui(message):
+        st.title('Marketing · conexión Cloudflare')
+        st.error(message)
+        st.caption('La app no guardará en el disco temporal ni reiniciará inventario para ocultar un fallo de conexión.')
+        worker_tools()
+        recovery_tools('setup_rescue')
+        st.stop()
+
     try:
-        try:settings=dict(st.secrets)
-        except Exception as secret_error:
-            missing=isinstance(secret_error,(FileNotFoundError,KeyError)) or type(secret_error).__name__=='StreamlitSecretNotFoundError'
-            if not missing: raise
-            if any(word in str(secret_error).lower() for word in ('parsing','parse error','tomldecode')):
-                raise AppError('Hay un error de formato en Secrets. Corrígelo antes de continuar; no se ha cambiado de base.') from None
-            settings={}
-        configure_storage(settings)
+        configure_storage()
+    except AppError as exc:
+        setup_ui(str(exc))
+    try:
         ensure_initialized()
         first=snapshot()
-    except Exception as exc:
-        logging.getLogger('marketing').error('Inicio fallido: %s',type(exc).__name__)
-        st.error('No se pudo abrir el almacén. No se sustituyeron los datos por una base nueva.')
-        st.info(str(exc) if isinstance(exc,AppError) else 'Revisa la conexión configurada y requirements.txt. No borres la base ni sus respaldos.')
+    except StorageNotInitialized:
+        if DB_PATH.is_file():
+            try:
+                with st.spinner('Rescatando y verificando el almacén anterior en Cloudflare…'):
+                    migrated = migrate_existing_local_if_empty()
+                if migrated:
+                    st.session_state['migration_verified'] = migrated
+                    st.rerun()
+            except AppError as exc:
+                st.error('No se pudo completar el traslado automático: '+str(exc))
+                st.caption('Se conservó el archivo local. No se recargó el inventario de apertura.')
+            except Exception as exc:
+                logging.getLogger('marketing').error('Migración local: %s',type(exc).__name__)
+                st.error('No se pudo confirmar el traslado. Conserva el respaldo y comprueba el estado antes de repetir.')
+        st.title('Conexión externa lista · recuperar el almacén')
+        st.info('D1 está conectado y todavía no tiene el almacén. Importa tu respaldo completo; no se recargó la apertura.')
+        if st.button('Comprobar también lectura y escritura R2',key='first_cf_test'):
+            try:cf_diagnostic();st.success('D1 y R2 respondieron. La comprobación no modifica inventario.')
+            except AppError as exc:st.error(str(exc))
+        recovery_tools('migration_rescue')
+        uploaded=st.file_uploader('Importar el respaldo COMPLETO de Marketing (ZIP o SQLite)',type=['zip','sqlite3'],key='first_import')
+        if uploaded is not None:
+            try:
+                blob=uploaded.getvalue();info=inspect_backup(blob)
+                st.write(f"{info['references']} productos · {info['units']:,} unidades · {info['documents']} fichas · {info['attachments']} adjuntos")
+                confirm=st.checkbox('Confirmo que este es el respaldo que debe trasladarse a la base externa.',key='confirm_first')
+                if st.button('Migrar todo y verificar cada tabla',disabled=not confirm):
+                    imported=import_into_empty(blob)
+                    st.session_state['migration_verified']=imported
+                    _runtime.initialized.discard((storage_identity(),VERSION));st.rerun()
+            except AppError as exc:st.error(str(exc))
+            except Exception as exc:
+                logging.getLogger('marketing').error('Migración: %s',type(exc).__name__)
+                st.error('No se pudo confirmar la migración. No inicies otra apertura; comprueba el estado de la conexión.')
+        with st.expander('Solo cuando NO existe historial que recuperar: crear una apertura nueva',expanded=False):
+            st.warning('Esta acción NO recupera registros perdidos. Inicia desde el conteo original; KEYSTONE histórico sigue pendiente de confirmar.')
+            phrase=st.text_input('Escribe INICIAR SIN HISTORIAL ANTERIOR',key='new_opening_phrase')
+            if st.button('Crear apertura explícita',disabled=phrase!='INICIAR SIN HISTORIAL ANTERIOR'):
+                try:initialize_explicit_opening(phrase);_runtime.initialized.discard((storage_identity(),VERSION));st.rerun()
+                except AppError as exc:st.error(str(exc))
         st.stop()
+    except Exception as exc:
+        logging.getLogger('marketing').error('Inicio: %s; SQLSTATE: %s',type(exc).__name__,getattr(exc,'sqlstate',None))
+        st.error('No se pudo abrir la base externa. No se creó una base alternativa ni se reinició el inventario.')
+        st.info(str(exc) if isinstance(exc,AppError) else 'Revisa que el Worker esté publicado y conserve DB, FILES y MARKETING_API_TOKEN.')
+        worker_tools()
+        recovery_tools('offline_rescue')
+        if st.button('Comprobar conexión otra vez'):st.rerun()
+        st.stop()
+
     @st.cache_resource(show_spinner=False)
     def component_files(signature):
-        root=Path(tempfile.gettempdir())/('marketing_v151_'+signature);root.mkdir(parents=True,exist_ok=True)
+        root=Path(tempfile.gettempdir())/('marketing_v170_'+signature);root.mkdir(parents=True,exist_ok=True)
         for name,content in [('index.html',FRONTEND_HTML),('bridge.js',BRIDGE_JS)]:
             temp=root/(name+'.'+uuid.uuid4().hex+'.tmp');temp.write_text(content,encoding='utf-8');os.replace(temp,root/name)
         return str(root)
     signature=hashlib.sha256((FRONTEND_HTML+BRIDGE_JS).encode()).hexdigest()[:20]
-    component=components.declare_component('marketing_workspace_v151',path=component_files(signature))
-    # Fragment reruns do not rerun initialization, native restore tools or asset generation.
+    component=components.declare_component('marketing_workspace_v170',path=component_files(signature))
     @st.fragment
     def workspace():
         request=component(response=st.session_state.get('cloud_response'),bootstrap=first,frame_height=920,
@@ -1999,53 +2074,391 @@ def run_streamlit():
         if isinstance(request,dict) and request.get('id')!=st.session_state.get('cloud_seen_request'):
             result=dispatch(request);st.session_state['cloud_seen_request']=request.get('id');st.session_state['cloud_response']=result
             from streamlit.errors import StreamlitAPIException
-            try: st.rerun(scope='fragment')
-            except StreamlitAPIException: st.rerun()
+            try:st.rerun(scope='fragment')
+            except StreamlitAPIException:st.rerun()
     workspace()
-    # No warning banners above the workspace. Recovery is deliberately kept accessible below.
-    with st.expander('Respaldos y conexión · administración',expanded=False):
-        if st.checkbox('Mostrar herramientas de respaldo y conexión',key='admin_tools'):
+    with st.expander('Guardado externo · respaldos y recuperación',expanded=False):
+        if st.checkbox('Mostrar herramientas de conservación',key='admin_tools_v17'):
             state=storage_status()
-            if is_cloud():st.success('PostgreSQL externo conectado. Inventario, logos, fichas y ajustes se comparten entre todas las PC.')
-            else:
-                st.warning('Guardado externo pendiente. Las PC que abran esta misma app comparten el archivo del servidor, pero Streamlit no garantiza conservarlo al recrearlo. Descarga respaldo antes de actualizar y al finalizar la jornada.')
-            st.caption('Acceso directo sin contraseña. Quien acceda a la publicación podrá consultar y modificar el almacén.')
-            if st.button('Preparar respaldo actual'):
+            if st.button('Comprobar conexión D1 y R2'):
+                try:cf_diagnostic();st.success('Lectura D1 y escritura/lectura R2 verificadas.')
+                except AppError as exc:st.error(str(exc))
+            st.success('Cloudflare D1 + R2 conectado. El espejo de Streamlit es desechable; no es el almacenamiento principal.')
+            st.caption('Última escritura confirmada: '+(state.get('last_saved_at') or 'Aún no registrada')+
+                       ' · Base: '+state.get('database_id','')[:12])
+            st.caption('Acceso directo sin login: quien acceda a esta publicación puede ver y modificar información.')
+            if st.button('Preparar respaldo completo actual'):
                 st.session_state['prepared_backup']=backup_zip();st.session_state['backup_revision']=state['revision']
             if st.session_state.get('prepared_backup'):
-                if st.session_state.get('backup_revision')!=state['revision']:st.info('Hay cambios posteriores: prepara una copia nueva antes de descargar.')
                 st.download_button('Descargar respaldo completo',st.session_state['prepared_backup'],
                     file_name='Respaldo_Marketing_'+today().isoformat()+'.zip',mime='application/zip',on_click='ignore')
-            st.markdown('**Restaurar o trasladar un respaldo existente**')
-            uploaded=st.file_uploader('ZIP o SQLite de Marketing',type=['zip','sqlite3'],key='restore_file')
+            st.markdown('**Puntos de recuperación en la base externa**')
+            st.caption('Se guarda una copia completa antes de la primera escritura de cada día con actividad '
+                       'y antes de restauraciones. Se muestran los últimos 100; no se borran automáticamente. No sustituyen una copia fuera de Cloudflare.')
+            points=checkpoint_list()
+            if points:
+                point=st.selectbox('Punto disponible',points,format_func=lambda x:x['created_at']+' · '+x['kind'],key='checkpoint')
+                if st.button('Preparar copia de ese punto'):
+                    st.session_state['point_blob']=checkpoint_download(point['id'])
+                if st.session_state.get('point_blob'):
+                    st.download_button('Descargar punto de recuperación',st.session_state['point_blob'],'Punto_Marketing.zip','application/zip')
+            else:st.caption('Se creará el primer punto al registrar una operación.')
+            st.markdown('**Archivos generados conservados**')
+            if st.button('Listar PDF y Excel archivados'):
+                with reading() as c:
+                    generated=[json.loads(r['value']) for r in rows(c,"SELECT value FROM meta WHERE key LIKE 'file:%'")]
+                st.session_state['generated_archive']=generated
+            generated=st.session_state.get('generated_archive',[])
+            if generated:
+                artifact=st.selectbox('Archivo',generated,format_func=lambda x:x['created_at']+' · '+x['name'])
+                st.download_button('Descargar copia archivada',base64.b64decode(artifact['data']),artifact['name'],artifact['mime'])
+            st.markdown('**Restauración excepcional: reemplaza el estado actual**')
+            uploaded=st.file_uploader('ZIP o SQLite completo',type=['zip','sqlite3'],key='restore_file')
             if uploaded is not None:
                 try:
-                    if uploaded.size>MAX_BACKUP_BYTES:raise AppError('El respaldo supera 150 MB.')
                     blob=uploaded.getvalue();details=inspect_backup(blob);digest=details['sha256']
-                    st.write(f"{details['references']} artículos · {details['units']:,} unidades · {details['documents']} documentos · {details['attachments']} adjuntos")
+                    st.write(f"{details['references']} artículos · {details['documents']} documentos · {details['attachments']} adjuntos")
                     if st.session_state.get('restore_candidate')!=digest:
                         st.session_state['restore_candidate']=digest;st.session_state['restore_expected']=(state['revision'],state['epoch'])
-                    yes=st.checkbox('Guardé mi respaldo actual y autorizo REEMPLAZAR todos los datos por esta copia.',key='confirm_'+digest[:16])
-                    if st.button('Restaurar respaldo',disabled=not yes):
+                    phrase=st.text_input('Escribe REEMPLAZAR CON ESTE RESPALDO',key='restore_'+digest[:12])
+                    if st.button('Restaurar con punto previo',disabled=phrase!='REEMPLAZAR CON ESTE RESPALDO'):
                         rev,epoch=st.session_state['restore_expected'];restore_backup(blob,rev,epoch)
-                        for k in ('cloud_seen_request','cloud_response','prepared_backup','restore_candidate','restore_expected'):st.session_state.pop(k,None)
-                        st.session_state['restored_ok']=True;st.rerun()
+                        st.session_state.clear();_runtime.initialized.discard((storage_identity(),VERSION));st.rerun()
                 except AppError as exc:st.error(str(exc))
-            if st.session_state.pop('restored_ok',False):st.success('Estado restaurado completo. No se sumaron inventarios.')
-            st.markdown('**Activar guardado permanente sin pedir claves a las compañeras**')
-            st.write('Crea o utiliza una base PostgreSQL y completa una sola vez estos datos reales en Settings → Secrets. No se incluyen credenciales inventadas. Después importa tu respaldo actual; no registres otra apertura.')
-            st.code('''[storage]
-backend = "postgres"
+            st.caption('Actualizar el código no vuelve a cargar la apertura. Una indisponibilidad de la base detiene el guardado, '
+                       'no crea un inventario temporal. Ningún servicio ofrece garantía de riesgo cero; conserva otra copia externa.')
 
-[postgres]
-host = "HOST_REAL_DEL_SESSION_POOLER"
-port = 5432
-dbname = "postgres"
-user = "postgres.REFERENCIA_REAL_DEL_PROYECTO"
-password = "CONTRASENA_REAL_DE_LA_BASE"
-sslmode = "require"''',language='toml')
-            st.caption('Sin [storage] backend="postgres" se conserva el modo SQLite actual. Si activas PostgreSQL y falla su conexión, la app se detiene: no crea una base temporal como sustituto.')
 
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare D1 + R2 transport. URL is public configuration, not a secret.
+# SQLite below is a disposable in-memory working copy. EVERY successful write
+# is acknowledged by an atomic D1 commit; binary/large values live in private R2.
+# ---------------------------------------------------------------------------
+import urllib.request, urllib.error
+CF_URL = 'https://makropetrol-marketing-api.freitesangeluis66.workers.dev'
+CF_PROTOCOL = 'marketing-d1-r2-v1'
+# Esta clave NO debe enviarse al navegador ni aparecer en logs.
+CF_INLINE_TOKEN = 'e-tjQgvw1lhmsIqSgpYxTzuVvC4dv1_xsmxxstNDP8SRIfnZ-lbpSDEFHvOxfkH1'
+# Código del componente Cloudflare: descargable desde la pantalla de conexión.
+CLOUDFLARE_WORKER_JS = '/** Makropetrol Marketing storage API 1.7\n * Bindings: DB (D1), FILES (private R2), MARKETING_API_TOKEN (Secret).\n * Server-to-server only. No CORS, SQL proxy, public files, or default token.\n * Immutable R2 objects first; D1 CAS + versioned rows in one atomic batch.\n * D1 is authoritative; Streamlit\'s SQLite mirror is disposable, never a fallback.\n */\nconst VERSION = \'1.7.0-cloudflare\';\nconst PROTOCOL = \'marketing-d1-r2-v1\';\nconst PREFIX = \'marketing-v17/\';\nconst SHA = /^[a-f0-9]{64}$/;\nconst ID = /^[a-zA-Z0-9_-]{12,100}$/;\nconst MAX_JSON = 8 * 1024 * 1024;\nconst MAX_BLOB = 64 * 1024 * 1024;\nconst TABLES = {\n  meta:[\'key\',\'value\'], brands:[\'id\',\'name\',\'normalized\',\'logo\'],\n  products:[\'id\',\'code\',\'brand_id\',\'name\',\'normalized\',\'source\',\'note\',\'created_day\'],\n  documents:[\'id\',\'number\',\'kind\',\'day\',\'recipient\',\'operator\',\'note\',\'reference\',\'request_key\',\'payload_hash\',\'input_hash\',\'related_id\',\'reversed_by\',\'created_at\'],\n  lines:[\'id\',\'document_id\',\'product_id\',\'quantity\',\'delta\',\'disposition\'],\n  attachments:[\'id\',\'document_id\',\'name\',\'mime\',\'sha256\',\'data\',\'created_at\'],\n  counts:[\'id\',\'document_id\',\'day\',\'data_json\'], closures:[\'month\',\'data_json\',\'created_at\',\'operator\']\n};\nclass ApiError extends Error { constructor(status,message){super(message);this.status=status;} }\nconst reply=(data,status=200)=>Response.json(data,{status,headers:{\'Cache-Control\':\'no-store\',\'X-Content-Type-Options\':\'nosniff\',\'Referrer-Policy\':\'no-referrer\'}});\nconst hex=buf=>Array.from(new Uint8Array(buf),n=>n.toString(16).padStart(2,\'0\')).join(\'\');\nconst sha=async value=>hex(await crypto.subtle.digest(\'SHA-256\',typeof value===\'string\'?new TextEncoder().encode(value):value));\nconst fail=(status,msg)=>{throw new ApiError(status,msg);};\nasync function authorize(request,env){\n  const secret=env.MARKETING_API_TOKEN;\n  if(typeof secret!==\'string\'||secret.length<32)fail(503,\'Falta MARKETING_API_TOKEN como Secret (mínimo 32 caracteres).\');\n  const auth=request.headers.get(\'Authorization\')||\'\';\n  if(!auth.startsWith(\'Bearer \')||auth.length>600)fail(401,\'Clave técnica incorrecta o ausente.\');\n  const a=await sha(auth.slice(7)),b=await sha(secret); let diff=0;\n  for(let i=0;i<a.length;i++)diff|=a.charCodeAt(i)^b.charCodeAt(i);\n  if(diff)fail(401,\'La clave de Streamlit no coincide con MARKETING_API_TOKEN del Worker.\');\n  if(!env.DB?.prepare||!env.FILES?.put)fail(503,\'Faltan las vinculaciones DB (D1) o FILES (R2).\');\n}\nlet schemaReady;\nasync function schema(env){\n  if(!schemaReady){schemaReady=env.DB.batch([\n    env.DB.prepare(\'CREATE TABLE IF NOT EXISTS mkv_state(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL CHECK(revision>=0), updated_at TEXT NOT NULL)\'),\n    env.DB.prepare("INSERT OR IGNORE INTO mkv_state VALUES(1,0,\'\')"),\n    env.DB.prepare(\'CREATE TABLE IF NOT EXISTS mkv_rows(table_name TEXT NOT NULL,row_key TEXT NOT NULL,valid_from INTEGER NOT NULL,valid_to INTEGER,data_json TEXT NOT NULL,row_sha TEXT NOT NULL,PRIMARY KEY(table_name,row_key,valid_from))\'),\n    env.DB.prepare(\'CREATE UNIQUE INDEX IF NOT EXISTS mkv_rows_current ON mkv_rows(table_name,row_key) WHERE valid_to IS NULL\'),\n    env.DB.prepare(\'CREATE INDEX IF NOT EXISTS mkv_rows_versions ON mkv_rows(valid_from,valid_to)\'),\n    env.DB.prepare(\'CREATE TABLE IF NOT EXISTS mkv_commits(commit_id TEXT PRIMARY KEY,revision INTEGER NOT NULL UNIQUE,request_sha TEXT NOT NULL,created_at TEXT NOT NULL,changes INTEGER NOT NULL,journal_key TEXT NOT NULL)\'),\n    env.DB.prepare(\'CREATE TABLE IF NOT EXISTS mkv_objects(sha256 TEXT PRIMARY KEY,size INTEGER NOT NULL,created_at TEXT NOT NULL)\'),\n    env.DB.prepare(\'CREATE TABLE IF NOT EXISTS mkv_backups(id TEXT PRIMARY KEY,revision INTEGER NOT NULL,created_at TEXT NOT NULL,kind TEXT NOT NULL,sha256 TEXT NOT NULL,size INTEGER NOT NULL,r2_key TEXT NOT NULL)\')\n  ]).catch(e=>{schemaReady=null;throw e;});}\n  await schemaReady;\n}\nconst db=env=>env.DB.withSession?env.DB.withSession(\'first-primary\'):env.DB;\nconst state=async database=>database.prepare(\'SELECT revision,updated_at FROM mkv_state WHERE id=1\').first();\nasync function readLimited(request,max){\n  const n=Number(request.headers.get(\'content-length\')||0);if(n>max)fail(413,\'Archivo o solicitud demasiado grande.\');\n  if(!request.body)return new Uint8Array();\n  const reader=request.body.getReader();const chunks=[];let total=0;\n  try{for(;;){const {value,done}=await reader.read();if(done)break;total+=value.byteLength;\n    if(total>max){await reader.cancel();fail(413,\'La solicitud supera el límite permitido.\');}chunks.push(value);}}\n  finally{reader.releaseLock();}\n  const out=new Uint8Array(total);let offset=0;for(const v of chunks){out.set(v,offset);offset+=v.length;}return out;\n}\nasync function readJson(request){\n  if(!(request.headers.get(\'content-type\')||\'\').startsWith(\'application/json\'))fail(415,\'Se requiere JSON.\');\n  const bytes=await readLimited(request,MAX_JSON);let body;\n  try{body=JSON.parse(new TextDecoder(\'utf-8\',{fatal:true}).decode(bytes));}catch{fail(400,\'JSON inválido.\');}\n  if(!body||typeof body!==\'object\'||Array.isArray(body))fail(400,\'Se requiere un objeto JSON.\');\n  return {body,bytes};\n}\nconst objectKey=hash=>PREFIX+\'objects/\'+hash;\nasync function getObject(env,hash){\n  if(!SHA.test(hash))fail(400,\'Huella de archivo inválida.\');\n  const object=await env.FILES.get(objectKey(hash));if(!object)fail(404,\'Archivo no encontrado en R2; no se generó un sustituto.\');\n  return new Response(object.body,{headers:{\'Content-Type\':\'application/octet-stream\',\'Cache-Control\':\'no-store\',\'X-SHA256\':hash,\'X-Content-Type-Options\':\'nosniff\'}});\n}\nasync function putObject(request,env,hash){\n  if(!SHA.test(hash))fail(400,\'Huella de archivo inválida.\');\n  const raw=await readLimited(request,MAX_BLOB);\n  if(await sha(raw)!==hash)fail(400,\'La huella del archivo no coincide. No se guardó.\');\n  const previous=await env.FILES.head(objectKey(hash));\n  if(previous&&previous.size!==raw.length)fail(409,\'Conflicto en un archivo existente.\');\n  if(!previous){await env.FILES.put(objectKey(hash),raw,{httpMetadata:{contentType:\'application/octet-stream\'},customMetadata:{sha256:hash},onlyIf:{etagDoesNotMatch:\'*\'}});}\n  const saved=await env.FILES.head(objectKey(hash));if(!saved||saved.size!==raw.length)fail(503,\'R2 no confirmó el archivo.\');\n  await env.DB.prepare(\'INSERT OR IGNORE INTO mkv_objects VALUES(?,?,?)\').bind(hash,raw.length,new Date().toISOString()).run();\n  return reply({ok:true,sha256:hash,size:raw.length,reused:!!previous});\n}\nfunction validateChange(item){\n  if(!item||typeof item!==\'object\'||!Object.hasOwn(TABLES,item.table))fail(400,\'Tabla no admitida.\');\n  if(typeof item.key!==\'string\'||!item.key||item.key.length>2000)fail(400,\'Clave de registro inválida.\');\n  if(item.data===null)return [];\n  if(!item.data||typeof item.data!==\'object\'||Array.isArray(item.data))fail(400,\'Registro inválido.\');\n  const columns=TABLES[item.table];if(Object.keys(item.data).length!==columns.length||columns.some(k=>!Object.hasOwn(item.data,k)))fail(400,\'Columnas incompatibles.\');\n  if(String(item.data[columns[0]])!==item.key)fail(400,\'Identificador incoherente.\');\n  const refs=[];\n  for(const value of Object.values(item.data)){\n    if(value&&typeof value===\'object\'){\n      if(Array.isArray(value)||!SHA.test(value.$r2||\'\')||![\'bytes\',\'utf8\'].includes(value.encoding)||!Number.isSafeInteger(value.size)||value.size<0||value.size>MAX_BLOB)fail(400,\'Referencia R2 inválida.\');\n      refs.push(value.$r2);\n    }else if(value!==null&&typeof value!==\'string\'&&!(typeof value===\'number\'&&Number.isSafeInteger(value)))fail(400,\'Valor no admitido.\');\n  }\n  if(new TextEncoder().encode(JSON.stringify(item.data)).length>800000)fail(413,\'Un registro supera el límite; externaliza su contenido en R2.\');\n  return refs;\n}\nfunction chunksBySize(items,limit=700000){\n  const out=[];let part=[],size=2;\n  for(const item of items){const n=new TextEncoder().encode(JSON.stringify(item)).length+1;\n    if(part.length&&(size+n>limit||part.length>=1000)){out.push(part);part=[];size=2;}part.push(item);size+=n;}\n  if(part.length)out.push(part);return out;\n}\nasync function commit(request,env,database){\n  const {body,bytes}=await readJson(request);const {base_revision,commit_id,changes}=body;\n  if(!Number.isSafeInteger(base_revision)||base_revision<0||!ID.test(commit_id||\'\'))fail(400,\'Revisión o ID inválido.\');\n  if(!Array.isArray(changes)||!changes.length||changes.length>10000)fail(413,\'La operación admite entre 1 y 10.000 registros modificados.\');\n  const requestHash=await sha(bytes);\n  const replay=async()=>{const prev=await db(env).prepare(\'SELECT * FROM mkv_commits WHERE commit_id=?\').bind(commit_id).first();\n    if(!prev)return null;if(prev.request_sha!==requestHash)fail(409,\'Este ID ya se utilizó con otros datos.\');\n    return reply({ok:true,revision:prev.revision,commit_id,reused:true});};\n  const found=await replay();if(found)return found;\n  const current=await state(database);if(current.revision!==base_revision)fail(409,\'Otra operación cambió el almacén. Actualiza y reintenta la MISMA ficha.\');\n  const seen=new Set(),refs=new Set(),normalized=[];\n  for(const item of changes){const k=item.table+\'\\x00\'+item.key;if(seen.has(k))fail(400,\'Registro repetido en la operación.\');seen.add(k);\n    for(const hash of validateChange(item))refs.add(hash);\n    const text=item.data===null?null:JSON.stringify(item.data);\n    normalized.push({t:item.table,k:item.key,j:text,h:text===null?null:await sha(text)});\n  }\n  const allRefs=[...refs];\n  for(let i=0;i<allRefs.length;i+=1000){const part=allRefs.slice(i,i+1000);\n    const result=await database.prepare(\'SELECT COUNT(*) AS n FROM mkv_objects WHERE sha256 IN (SELECT value FROM json_each(?))\').bind(JSON.stringify(part)).first();\n    if(result.n!==part.length)fail(409,\'Hay un archivo que R2 todavía no confirmó. No se aplicaron los cambios.\');}\n  const next=base_revision+1,stamp=new Date().toISOString();\n  const journalKey=PREFIX+\'journals/\'+commit_id+\'.json\';\n  // Journal before the SQL transaction: an orphan is harmless; never claim an orphan is committed.\n  const existing=await env.FILES.head(journalKey);\n  if(existing&&existing.customMetadata?.request_sha!==requestHash)fail(409,\'ID de diario ya utilizado.\');\n  if(!existing)await env.FILES.put(journalKey,bytes,{httpMetadata:{contentType:\'application/json\'},customMetadata:{request_sha:requestHash},onlyIf:{etagDoesNotMatch:\'*\'}});\n  const stmts=[database.prepare(\'UPDATE mkv_state SET revision=CASE WHEN revision=? THEN revision+1 ELSE NULL END,updated_at=? WHERE id=1\').bind(base_revision,stamp)];\n  for(const part of chunksBySize(normalized)){\n    const payload=JSON.stringify(part);\n    stmts.push(database.prepare("UPDATE mkv_rows SET valid_to=? WHERE valid_to IS NULL AND (table_name,row_key) IN (SELECT json_extract(value,\'$.t\'),json_extract(value,\'$.k\') FROM json_each(?))").bind(next,payload));\n    stmts.push(database.prepare("INSERT INTO mkv_rows(table_name,row_key,valid_from,valid_to,data_json,row_sha) SELECT json_extract(value,\'$.t\'),json_extract(value,\'$.k\'),?,NULL,json_extract(value,\'$.j\'),json_extract(value,\'$.h\') FROM json_each(?) WHERE json_extract(value,\'$.j\') IS NOT NULL").bind(next,payload));\n  }\n  stmts.push(database.prepare(\'INSERT INTO mkv_commits VALUES(?,?,?,?,?,?)\').bind(commit_id,next,requestHash,stamp,changes.length,journalKey));\n  try{await database.batch(stmts);}catch(error){const retry=await replay();if(retry)return retry;\n    const last=await state(db(env));if(last.revision!==base_revision)fail(409,\'Otro guardado ganó la revisión. No se aplicó esta operación; actualiza y reintenta.\');throw error;}\n  return reply({ok:true,revision:next,commit_id,reused:false});\n}\nasync function listRows(request,env,database){\n  const u=new URL(request.url),head=await state(database),rev=Number(u.searchParams.get(\'revision\')||head.revision);\n  const after=u.searchParams.get(\'after\')||\'\';\n  if(!Number.isSafeInteger(rev)||rev<0||rev>head.revision||after.length>2400)fail(400,\'Revisión inválida.\');\n  const result=await database.prepare("SELECT table_name,row_key,data_json,row_sha FROM mkv_rows WHERE valid_from<=? AND (valid_to IS NULL OR valid_to>?) AND (table_name||char(31)||row_key)>? ORDER BY table_name,row_key LIMIT 250").bind(rev,rev,after).all();\n  // 250 rows, bounded by 5 MB on the wire. Never silently truncate a snapshot.\n  let size=0;const out=[];\n  for(const row of result.results){size+=row.data_json.length;if(out.length&&size>5*1024*1024)break;out.push(row);}\n  const last=out.at(-1),more=out.length<result.results.length||result.results.length===250;\n  return reply({ok:true,revision:rev,rows:out,next:more&&last?last.table_name+\'\\x1f\'+last.row_key:null});\n}\nasync function status(env,database){\n  const head=await state(database);\n  const counts=await database.prepare(\'SELECT table_name,COUNT(*) AS n FROM mkv_rows WHERE valid_to IS NULL GROUP BY table_name\').all();\n  return reply({ok:true,protocol:PROTOCOL,version:VERSION,...head,tables:counts.results,storage:\'D1 + R2\',bindings:{DB:true,FILES:true}});\n}\nasync function health(env,database){\n  const read=await database.prepare(\'SELECT 1 AS ok\').first();\n  const key=PREFIX+\'health/\'+crypto.randomUUID();const text=\'marketing-health-\'+crypto.randomUUID();\n  await env.FILES.put(key,text);const obj=await env.FILES.get(key);const ok=obj&&(await obj.text())===text;\n  if(ok)await env.FILES.delete(key);if(!read.ok||!ok)fail(503,\'No se confirmó la lectura y escritura de comprobación.\');\n  return reply({ok:true,protocol:PROTOCOL,d1_read:true,r2_write_read:true,inventory_changed:false});\n}\nasync function backup(request,env,database){\n  const {body}=await readJson(request);if(!SHA.test(body.sha256||\'\')||!ID.test(body.id||\'\'))fail(400,\'Respaldo inválido.\');\n  const head=await state(database);if(!Number.isSafeInteger(body.revision)||body.revision<0||body.revision>head.revision)fail(400,\'Revisión de respaldo inválida.\');\n  const object=await env.FILES.head(objectKey(body.sha256));if(!object)fail(409,\'Falta el archivo de respaldo en R2.\');\n  const kind=String(body.kind||\'manual\').slice(0,60);\n  await database.prepare(\'INSERT OR IGNORE INTO mkv_backups VALUES(?,?,?,?,?,?,?)\').bind(body.id,body.revision,new Date().toISOString(),kind,body.sha256,object.size,objectKey(body.sha256)).run();\n  const saved=await database.prepare(\'SELECT * FROM mkv_backups WHERE id=?\').bind(body.id).first();\n  if(saved.sha256!==body.sha256)fail(409,\'El ID de respaldo ya pertenece a otro archivo.\');return reply({ok:true,backup:saved});\n}\nexport default {\n  async fetch(request,env){\n    try{\n      const url=new URL(request.url),path=url.pathname.replace(/\\/$/,\'\')||\'/\';\n      if(request.method===\'GET\'&&path===\'/\')return reply({servicio:\'Makropetrol Marketing\',version:VERSION,protocol:PROTOCOL,alcance:\'API de almacenamiento D1 + R2. Requiere token técnico; la URL pública no comprueba inventario.\',needs_auth:true});\n      await authorize(request,env);await schema(env);const database=db(env);\n      if(request.method===\'GET\'&&path===\'/v1/status\')return await status(env,database);\n      if(request.method===\'POST\'&&path===\'/v1/health\')return await health(env,database);\n      if(request.method===\'GET\'&&path===\'/v1/rows\')return await listRows(request,env,database);\n      if(request.method===\'POST\'&&path===\'/v1/commit\')return await commit(request,env,database);\n      if(request.method===\'GET\'&&path.startsWith(\'/v1/commits/\')){\n        const id=path.slice(\'/v1/commits/\'.length);if(!ID.test(id))fail(400,\'ID inválido.\');\n        const found=await database.prepare(\'SELECT commit_id,revision,request_sha,created_at FROM mkv_commits WHERE commit_id=?\').bind(id).first();return reply({ok:true,commit:found||null});}\n      if(path.startsWith(\'/v1/blob/\')){const hash=path.slice(\'/v1/blob/\'.length);\n        if(request.method===\'GET\')return await getObject(env,hash);\n        if(request.method===\'PUT\')return await putObject(request,env,hash);}\n      if(path===\'/v1/backups\'&&request.method===\'POST\')return await backup(request,env,database);\n      if(path===\'/v1/backups\'&&request.method===\'GET\'){\n        const r=await database.prepare(\'SELECT * FROM mkv_backups ORDER BY created_at DESC LIMIT 100\').all();return reply({ok:true,backups:r.results});}\n      fail(404,\'Ruta no disponible.\');\n    }catch(error){if(error instanceof ApiError)return reply({ok:false,error:error.message},error.status);\n      console.error(\'Marketing storage failure\',error?.name||\'Error\');return reply({ok:false,error:\'Cloudflare no confirmó la operación. No se cambió a almacenamiento temporal.\'},503);}\n  }\n};\n'
+_CF_CONFIG = None
+_CF_CURRENT_REV = contextvars.ContextVar('marketing_cf_revision', default=None)
+_CF_TEST_ALLOW_HTTP = False  # Tests only; never enabled by Secrets/UI.
+CF_MAX_OBJECT = 64 * 1024 * 1024
+for _name,_value in [('cf_cache',{}),('cf_backup_days',set())]:
+    if not hasattr(_runtime,_name):setattr(_runtime,_name,_value)
+
+
+def is_cloud():
+    return _CF_CONFIG is not None
+
+
+def configure_storage(secrets_source=None):
+    global _CF_CONFIG
+    _CF_CONFIG = None
+    values = dict(secrets_source or {})
+    cfg = dict(values.get('cloudflare',{}))
+    url = str(cfg.get('worker_url') or os.environ.get('MARKETING_WORKER_URL') or CF_URL).strip().rstrip('/')
+    token = str(cfg.get('api_token') or os.environ.get('MARKETING_API_TOKEN') or CF_INLINE_TOKEN).strip()
+    parsed = urlparse(url)
+    valid_scheme = parsed.scheme == 'https' or (_CF_TEST_ALLOW_HTTP and parsed.scheme=='http' and parsed.hostname in ('127.0.0.1','localhost'))
+    if not valid_scheme or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('','/'):
+        raise AppError('La dirección del Worker debe ser una URL HTTPS de producción, sin rutas ni parámetros.')
+    if not 32 <= len(token) <= 512 or any(x in token.upper() for x in ('PEGA_AQUI','REEMPLAZA','TU_CLAVE','MISMA_CLAVE')):
+        raise AppError('La clave técnica incorporada está incompleta. No se utilizó un guardado temporal.')
+    _CF_CONFIG = {'url':url,'token':token}
+
+
+def storage_identity():
+    if not is_cloud():raise AppError('No hay conexión Cloudflare configurada. No se guardará en un disco temporal.')
+    return hashlib.sha256((_CF_CONFIG['url']+'\0'+_CF_CONFIG['token']).encode()).hexdigest()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,*args,**kwargs):
+        raise AppError('El Worker intentó redirigir la conexión. Revisa su URL; no se enviaron claves a otro destino.')
+
+
+def cf_api(method,path,payload=None,raw=None,binary=False):
+    """Bounded, exact-body retries; never log the token, request body or private rows."""
+    if not is_cloud():raise AppError('Conecta Cloudflare antes de registrar información.')
+    if not path.startswith('/v1/') or '://' in path:raise AppError('Ruta Cloudflare inválida.')
+    data = raw if raw is not None else (json.dumps(payload,ensure_ascii=False,separators=(',',':')).encode() if payload is not None else None)
+    headers={'Authorization':'Bearer '+_CF_CONFIG['token'],'Accept':'application/octet-stream' if binary else 'application/json'}
+    if data is not None:headers['Content-Type']='application/octet-stream' if raw is not None else 'application/json'
+    request=urllib.request.Request(_CF_CONFIG['url']+path,data=data,headers=headers,method=method)
+    for attempt in range(3):
+        try:
+            with urllib.request.build_opener(_NoRedirect()).open(request,timeout=40) as response:
+                limit=CF_MAX_OBJECT+1 if binary else 10*1024*1024
+                body=response.read(limit+1)
+                if len(body)>limit:raise AppError('La respuesta remota supera el límite seguro; no se cargó parcialmente.')
+                if binary:return body
+                try:answer=json.loads(body)
+                except (ValueError,UnicodeDecodeError):raise AppError('El Worker respondió con un formato inesperado. Publica worker.js de la versión 1.7.') from None
+                if not isinstance(answer,dict) or answer.get('ok') is not True:
+                    raise AppError('Cloudflare no confirmó la solicitud; no se guardó una copia temporal.')
+                return answer
+        except urllib.error.HTTPError as exc:
+            try:detail=json.loads(exc.read(4096)).get('error','')
+            except Exception:detail=''
+            if exc.code==401:raise AppError('La clave incorporada no coincide con el Secret MARKETING_API_TOKEN del Worker. Revisa que conserve la clave existente, sin cambiarla.') from None
+            if exc.code==404:raise AppError('El Worker no tiene esta ruta o falta un archivo. Publica el worker.js 1.7 y no borres el bucket.') from None
+            if exc.code==409:raise AppError(detail or 'Otra persona guardó cambios. Actualiza y reintenta la misma ficha.') from None
+            if exc.code in (400,413,415):raise AppError(detail or 'Cloudflare rechazó la solicitud; no se aplicó parcialmente.') from None
+            if exc.code in (429,500,502,503,504) and attempt<2:time.sleep(.4*(attempt+1));continue
+            raise CommitNotConfirmed('No se pudo confirmar la respuesta de Cloudflare. Consulta Movimientos antes de repetir una ficha; no uses una apertura nueva.') from None
+        except (urllib.error.URLError,TimeoutError,ConnectionError,OSError):
+            if attempt<2:time.sleep(.4*(attempt+1));continue
+            raise CommitNotConfirmed('No se pudo contactar el Worker. No se guardó localmente como alternativa. Conserva la misma ficha y comprueba el historial antes de reintentar.') from None
+
+
+def cf_status():
+    result=cf_api('GET','/v1/status')
+    if result.get('protocol')!=CF_PROTOCOL:raise AppError('Actualiza el Worker con worker.js de esta entrega; el comprobador anterior no guarda el almacén.')
+    return result
+
+
+def _blob_cache_path(digest):
+    if not re.fullmatch('[0-9a-f]{64}',digest):raise AppError('Huella de archivo inválida.')
+    root=Path(tempfile.gettempdir())/'marketing_cf_blobs'/storage_identity()
+    root.mkdir(parents=True,exist_ok=True)
+    return root/digest
+
+
+def cf_get_blob(digest,size=None):
+    path=_blob_cache_path(digest)
+    if path.is_file():
+        raw=path.read_bytes()
+        if hashlib.sha256(raw).hexdigest()==digest and (size is None or len(raw)==size):return raw
+        path.unlink(missing_ok=True)
+    raw=cf_api('GET','/v1/blob/'+digest,binary=True)
+    if hashlib.sha256(raw).hexdigest()!=digest or (size is not None and len(raw)!=size):
+        raise AppError('Un archivo de R2 no pasó la comprobación. No se sustituyó ni se marcó como válido.')
+    temporary=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
+    temporary.write_bytes(raw);os.replace(temporary,path)
+    return raw
+
+
+def cf_put_blob(raw):
+    raw=bytes(raw)
+    if len(raw)>CF_MAX_OBJECT:raise AppError('El archivo supera 64 MB. No se guardó parcialmente; utiliza una migración por lotes para ese tamaño.')
+    digest=hashlib.sha256(raw).hexdigest()
+    answer=cf_api('PUT','/v1/blob/'+digest,raw=raw)
+    if answer.get('sha256')!=digest or answer.get('size')!=len(raw):raise AppError('R2 no confirmó el contenido completo.')
+    path=_blob_cache_path(digest);temporary=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
+    temporary.write_bytes(raw);os.replace(temporary,path)
+    return digest
+
+
+def _new_mirror():
+    c=sqlite3.connect(':memory:',isolation_level=None,check_same_thread=False)
+    c.row_factory=sqlite3.Row;c.executescript(SQLITE_SCHEMA)
+    c.execute('PRAGMA foreign_keys=ON');c.execute('PRAGMA trusted_schema=OFF')
+    return c
+
+
+def _clone(c):
+    target=_new_mirror();c.backup(target);return target
+
+
+def _decode_value(value):
+    if isinstance(value,dict):
+        if set(value)!=set(('$r2','encoding','size')) or value['encoding'] not in ('bytes','utf8'):
+            raise AppError('Referencia de archivo incompatible. No se reinició el almacén.')
+        raw=cf_get_blob(value['$r2'],value['size'])
+        return raw if value['encoding']=='bytes' else raw.decode('utf-8')
+    if value is not None and not isinstance(value,(str,int,float)):
+        raise AppError('Dato remoto inválido.')
+    return value
+
+
+def _encode_value(value,table,column,key):
+    if isinstance(value,(bytes,bytearray,memoryview)):
+        data=bytes(value);return {'$r2':cf_put_blob(data),'encoding':'bytes','size':len(data)}
+    if isinstance(value,str):
+        data=value.encode('utf-8')
+        # Logos and generated artifacts are outside D1 even when they are small.
+        external = len(data)>24000 or (table=='meta' and column=='value' and (key.startswith('file:') or key=='company_logo'))
+        if external:return {'$r2':cf_put_blob(data),'encoding':'utf8','size':len(data)}
+    return value
+
+
+def _get_mirror(revision=None):
+    identity=storage_identity();remote=cf_status();current=int(remote['revision'])
+    wanted=current if revision is None else int(revision)
+    if wanted<0 or wanted>current:raise AppError('Revisión remota no disponible.')
+    cached=_runtime.cf_cache.get(identity)
+    if revision is None and cached and cached['revision']==wanted:return cached['db'],wanted
+    c=_new_mirror();c.execute('PRAGMA foreign_keys=OFF');c.execute('BEGIN');after='';seen=set()
+    try:
+        while True:
+            from urllib.parse import urlencode
+            packet=cf_api('GET','/v1/rows?'+urlencode({'revision':wanted,'after':after}))
+            if packet.get('revision')!=wanted:raise AppError('La lectura cambió de revisión. No se utilizaron datos mezclados.')
+            for row in packet.get('rows',[]):
+                table,key,data_text=row['table_name'],row['row_key'],row['data_json']
+                if table not in REQUIRED_COLUMNS or (table,key) in seen:raise AppError('Registro remoto inválido o repetido.')
+                seen.add((table,key))
+                if hashlib.sha256(data_text.encode()).hexdigest()!=row['row_sha']:raise AppError('Una fila remota no pasó la verificación de integridad.')
+                values=json.loads(data_text);cols=REQUIRED_COLUMNS[table]
+                if set(values)!=set(cols) or str(values[cols[0]])!=key:raise AppError('Columnas remotas incompatibles.')
+                decoded=[_decode_value(values[k]) for k in cols]
+                c.execute(f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",decoded)
+            next_after=packet.get('next')
+            if not next_after:break
+            if next_after<=after:raise AppError('Paginación remota inválida. No se utilizó una base incompleta.')
+            after=next_after
+        c.commit()
+        if c.execute('PRAGMA foreign_key_check').fetchone():raise AppError('El almacén remoto contiene referencias incompletas. No se reemplazó por la apertura.')
+        c.execute('PRAGMA foreign_keys=ON')
+    except BaseException:c.close();raise
+    if revision is not None:return c,wanted
+    if cached:cached['db'].close()
+    _runtime.cf_cache[identity]={'revision':wanted,'db':c}
+    return c,wanted
+
+
+def _raw_rows(c):
+    result={}
+    for table,columns in REQUIRED_COLUMNS.items():
+        for row in c.execute(f"SELECT {','.join(columns)} FROM {table}"):
+            result[(table,str(row[columns[0]]))]=dict(row)
+    return result
+
+
+def _commit_changes(before,c,revision):
+    after=_raw_rows(c);changes=[]
+    for table,key in sorted(set(before)|set(after)):
+        old,new=before.get((table,key)),after.get((table,key))
+        if old==new:continue
+        encoded=None if new is None else {k:_encode_value(v,table,k,key) for k,v in new.items()}
+        changes.append({'table':table,'key':key,'data':encoded})
+    if not changes:return revision
+    if len(changes)>10000:raise AppError('Esta actualización cambia más de 10.000 filas. No se guardó una parte; requiere migración por lotes.')
+    commit_id=uuid.uuid4().hex
+    payload={'base_revision':revision,'commit_id':commit_id,'changes':changes}
+    raw=json.dumps(payload,ensure_ascii=False,separators=(',',':')).encode()
+    if len(raw)>8*1024*1024:raise AppError('La operación supera 8 MB de registros. No se guardó parcialmente.')
+    try:answer=cf_api('POST','/v1/commit',payload=payload)
+    except CommitNotConfirmed:
+        # A lost HTTP reply is not proof of rollback. Read the durable receipt.
+        try:receipt=cf_api('GET','/v1/commits/'+commit_id).get('commit')
+        except AppError:receipt=None
+        if not receipt or receipt.get('request_sha')!=hashlib.sha256(raw).hexdigest():raise
+        answer={'ok':True,'commit_id':commit_id,'revision':receipt['revision']}
+    if answer.get('commit_id')!=commit_id or answer.get('revision')!=revision+1:
+        raise CommitNotConfirmed('Cloudflare respondió con una confirmación inesperada. Revisa el historial antes de repetir.')
+    return revision+1
+
+
+@contextmanager
+def reading():
+    with LOCK:
+        source,revision=_get_mirror();c=_clone(source);handle=_CF_CURRENT_REV.set(revision)
+        try:yield c
+        finally:c.close();_CF_CURRENT_REV.reset(handle)
+
+
+@contextmanager
+def transaction():
+    with LOCK:
+        source,revision=_get_mirror();c=_clone(source);before=_raw_rows(c)
+        maintaining=_MAINTENANCE.get();handle=_CF_CURRENT_REV.set(revision)
+        try:
+            c.execute('BEGIN IMMEDIATE')
+            if not maintaining:
+                if meta(c,'seeded')!='1':raise StorageNotInitialized('Recupera el respaldo antes de registrar movimientos.')
+                expected=_EXPECTED_EPOCH.get()
+                if expected is not None and expected!=meta(c,'storage_epoch'):raise AppError('El almacén fue restaurado. Pulsa Actualizar antes de guardar.')
+                checkpoint_if_due(c)
+            yield c
+            if not maintaining:
+                put_meta(c,'last_saved_at',now_iso());bump(c)
+                request=_REQUEST_INFO.get()
+                if request:
+                    entry={'at':now_iso(),'action':request.get('path',''),'request_id':request.get('id',''),
+                           'operator':request.get('operator',''),'revision':int(meta(c,'revision','0'))}
+                    put_meta(c,'audit:'+uuid.uuid4().hex,json.dumps(entry,ensure_ascii=False))
+            if c.execute('PRAGMA foreign_key_check').fetchone():raise AppError('La operación dejó referencias inválidas. No se envió a Cloudflare.')
+            c.commit()  # Only the in-memory calculation; not a durable success yet.
+            new_revision=_commit_changes(before,c,revision)
+            identity=storage_identity();previous=_runtime.cf_cache.pop(identity,None)
+            if previous:previous['db'].close()
+            _runtime.cf_cache[identity]={'revision':new_revision,'db':_clone(c)}
+        except BaseException:
+            try:c.rollback()
+            except Exception:pass
+            previous=_runtime.cf_cache.pop(storage_identity(),None)
+            if previous:previous['db'].close()
+            raise
+        finally:c.close();_CF_CURRENT_REV.reset(handle)
+
+
+def prepare_schema():
+    cf_status()  # Worker creates only its own mkv_* infrastructure, no inventory.
+
+
+def init_db():
+    with reading() as c:
+        if meta(c,'seeded')!='1':raise StorageNotInitialized('Cloudflare está vacío. Importa tu respaldo completo; no se recargó la apertura.')
+        schema_version=meta(c,'schema');needs=meta(c,'app_version')!=VERSION
+    if schema_version!='1':raise AppError('La estructura guardada es incompatible. No se modificó.')
+    if needs:
+        token=_MAINTENANCE.set(True)
+        try:
+            with transaction() as c:
+                reconcile_catalog(c)
+                if not meta(c,'storage_epoch'):put_meta(c,'storage_epoch',uuid.uuid4().hex)
+                if not meta(c,'database_id'):put_meta(c,'database_id',uuid.uuid4().hex)
+                if not meta(c,'shared_settings'):put_meta(c,'shared_settings',json.dumps(DEFAULT_SETTINGS,ensure_ascii=False))
+                put_meta(c,'app_version',VERSION)
+        finally:_MAINTENANCE.reset(token)
+
+
+def ensure_initialized():
+    init_db()
+
+
+def _checkpoint(c,kind,identifier=None):
+    if meta(c,'seeded')!='1':return None
+    identifier=identifier or (kind+'-'+uuid.uuid4().hex)
+    identifier=identifier.replace(':','-')
+    found=next((r for r in checkpoint_list() if r['id']==identifier),None)
+    if found:return identifier
+    payload=_export_from_connection(c);digest=cf_put_blob(payload)
+    revision=_CF_CURRENT_REV.get()
+    if revision is None:revision=int(cf_status()['revision'])
+    try:cf_api('POST','/v1/backups',payload={'id':identifier,'sha256':digest,'revision':revision,'kind':kind})
+    except AppError:
+        # Another browser may already have created the same daily checkpoint.
+        if kind!='inicio_jornada' or not any(r['id']==identifier for r in checkpoint_list()):raise
+    return identifier
+
+
+def checkpoint_if_due(c):
+    identity=(storage_identity(),today().isoformat())
+    if identity not in _runtime.cf_backup_days:
+        _checkpoint(c,'inicio_jornada','dia-'+today().isoformat())
+        _runtime.cf_backup_days.add(identity)
+
+
+def checkpoint_list():
+    return cf_api('GET','/v1/backups').get('backups',[])
+
+
+def checkpoint_download(identifier):
+    item=next((p for p in checkpoint_list() if p['id']==identifier),None)
+    if not item:raise AppError('Punto no encontrado entre los últimos 100. Los anteriores no se borran de Cloudflare.')
+    return cf_get_blob(item['sha256'],item['size'])
+
+
+def cf_diagnostic():
+    result=cf_api('POST','/v1/health',payload={})
+    if not result.get('d1_read') or not result.get('r2_write_read'):raise AppError('La comprobación no confirmó D1 y R2.')
+    return result
 
 
 if __name__ == '__main__':
