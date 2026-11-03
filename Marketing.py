@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Makropetrol Marketing 1.7.1 · conexión Cloudflare preconfigurada.
+"""Makropetrol Marketing 1.7.3 · interfaz limpia y lecturas optimizadas.
 Un archivo Python: interfaz, catálogo, logo, motor, conexión y copia del Worker.
 No solicita contraseña de entrada ni lee Secrets de Streamlit.
 La credencial está incluida por solicitud expresa del propietario: PUBLICAR
@@ -11,19 +11,21 @@ Cloudflare es el almacenamiento principal; nunca se utiliza SQLite temporal
 como sustituto. Si aún existe la base local anterior, se rescata y migra a una
 base remota vacía. Si no existe, solicita respaldo, nunca reinicia saldos solo.
 """
-# 1.7.2: identificación HTTP, diagnósticos y rescate accesible. Sin cambios en saldos ni Worker.
+# 1.7.3: sin barra superior, lecturas agrupadas, pantalla por revisión y descargas paralelas.
+# Se conservan el protocolo del Worker, la confirmación remota y todos los registros.
 from __future__ import annotations
 import base64, calendar, collections, csv, hashlib, html, io, json, math
 import os, re, secrets, shutil, socket, sqlite3, sys, tempfile, threading, traceback
 import unicodedata, uuid, webbrowser, zipfile, zlib
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import logging, time, types, contextvars, copy
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-VERSION = '1.7.2-conexion-diagnostico-rescate'
+VERSION = '1.7.3-interfaz-limpia-lecturas-optimizadas'
 OPENING_DAY = '2026-10-30'
 SOURCE_NAME = 'INVENTARIOS MARCAS30-10.xlsx'
 SEED_B64 = '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'
@@ -565,7 +567,7 @@ def document_data(did):
         d['attachments']=rows(c,'SELECT id,name,mime,created_at FROM attachments WHERE document_id=?',(did,))
         return d
 
-def snapshot():
+def _snapshot_uncached():
     """One snapshot transaction. Event pending amounts are grouped in SQL, not N+1."""
     with reading() as c:
         products=product_list(c)
@@ -1522,6 +1524,7 @@ function toast(t,err=false){$('toastroot').innerHTML=`<div class="toast ${err?'e
 async function download(url){try{toast('Preparando el archivo…');const res=await window.marketingBridgeFetch(url,{headers:{'X-App-Token':TOKEN}});if(!res.ok){const x=await res.json();throw Error(x.error)}const blob=await res.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);const name=(res.headers.get('Content-Disposition')||'').match(/filename="([^"]+)"/);a.download=name?name[1]:'marketing.zip';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),30000);toast('Archivo preparado. Revisa tus descargas.')}catch(e){toast(e.message,true)}}
 function acceptState(value){S=value;$('datepill').textContent=datefmt(S.today);$('companyLogo').src=S.company_logo;$('storageLabel').textContent=S.cloud?'Base externa conectada':'Respaldo necesario · ver Ayuda';$('syncLabel').textContent=S.cloud?'Almacén en nube':'Almacén central';render()}
 async function refresh(){try{acceptState(await api('/api/state'))}catch(e){$('content').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+async function afterMutation(result,openDocument=false){if(result._next_state)acceptState(result._next_state);else await refresh();if(openDocument)await showDocument(result.id,result._next_document||null)}
 function go(p){page=p;render()}
 function render(){$('nav').innerHTML=navItems.map(([id,t,i])=>`<button class="navbtn ${id===page?'active':''}" onclick="go('${id}')">${ico(i)}${t}</button>`).join('');$('crumb').textContent=navItems.find(x=>x[0]===page)?.[1]||'';({home:home,inventory:inventory,history:history,tests:tests,events:events,reports:reports,sellers:sellers,settings:settings}[page]||home)()}
 function stat(label,value,hint,ic='box'){return `<div class="stat"><div class="label">${label}<span class="roundicon">${ico(ic)}</span></div><strong>${fmt(value)}</strong><span class="hint">${hint}</span></div>`}
@@ -1572,7 +1575,7 @@ const operator=$('kOperator').value;
 const answer=await api('/api/keystone-quantities',{key:keystoneReviewKey,source_id:r.source_id,revision:r.revision,expected_epoch:r.epoch,
 operator,note:$('kNote').value,confirmed_current_stock:true,
 items:r.items.map(p=>({product_id:p.product_id,counted:$('kCount_'+p.product_id).value}))});
-rememberOperator(operator);closeModal();await refresh();go('inventory');
+rememberOperator(operator);closeModal();await afterMutation(r);go('inventory');
 const brand=S.brands.find(b=>b.name==='KEYSTONE');if(brand)filterBrand(brand.id);
 toast(`Cantidades guardadas: ${fmt(answer.total_after||0)} unidades verificadas. No se repetirán al reiniciar.`);
 }catch(e){modalError(e)}finally{if($('kSave'))$('kSave').disabled=false;}
@@ -1595,7 +1598,7 @@ ${c.missing.length?`<div class="error">Pendientes: ${c.missing.map(x=>esc(x.bran
 ${c.conflicts.length?`<div class="notice warn">Hay descripciones editadas que no se sobrescribieron. Revisa su nombre antes de crear un duplicado.</div>`:''}
 ${c.repairs.length?`<div class="notice">La última reparación recuperó ${c.repairs.at(-1).added.length} referencias en cero. Revisa las cantidades si alguno de esos artículos tiene mercancía física.</div>`:''}`,
 `<button class="btn" onclick="closeModal()">Cerrar</button><button class="btn" onclick="download('/api/catalog-csv')">Descargar revisión CSV</button><button class="btn primary" onclick="repairCatalog()">Comprobar y recuperar faltantes</button>`,true)}
-async function repairCatalog(){try{const r=await api('/api/catalog-repair',{});closeModal();await refresh();showCatalogCheck();toast(`${r.added.length} referencias recuperadas. No se modificaron cantidades.`)}catch(e){modalError(e)}}
+async function repairCatalog(){try{const r=await api('/api/catalog-repair',{});closeModal();await afterMutation(r);showCatalogCheck();toast(`${r.added.length} referencias recuperadas. No se modificaron cantidades.`)}catch(e){modalError(e)}}
 function docsTable(ds){if(!ds.length)return '<div class="empty">Todavía no hay fichas en esta sección.</div>';return `<div class="tablewrap"><table><thead><tr><th>Ficha</th><th>Fecha</th><th>Tipo</th><th>Asesor / destino</th><th>Responsable</th><th>Estado</th><th></th></tr></thead><tbody>${ds.map(d=>`<tr><td class="code">${esc(d.number)}</td><td>${esc(d.day)}</td><td>${labels[d.kind]}</td><td>${esc(d.recipient||'Almacén')}</td><td>${esc(d.operator)}</td><td><span class="badge ${d.kind==='PRUEBA'?'warn':d.reversed_by?'zero':'good'}">${d.kind==='PRUEBA'?'PRUEBA · sin descuento':d.reversed_by?'Anulada':'Real · guardada'}</span></td><td><button class="btn sm" onclick="showDocument(${d.id})">Ver ficha</button></td></tr>`).join('')}</tbody></table></div>`}
 function tests(){$('content').innerHTML=header('Pedidos de prueba','Practica sin descontar, reservar ni alterar los reportes reales.',`<button class="btn primary" onclick="movement('ENTREGA','PRUEBA')">${ico('plus')} Nuevo pedido de prueba</button>`)+`<div class="notice warn"><b>PRUEBA no es una entrega real.</b> Los PDF están marcados TEST y no entran en el reporte mensual ni en Entregas por asesor. Para entregar mercancía de verdad, abre una ficha nueva en modo REAL y confirma su salida.</div><div class="card">${docsTable(S.tests||[])}<p class="small">Últimas 200 pruebas. Se conservan en el respaldo, separadas del historial real.</p></div>`}
 function history(){$('content').innerHTML=header('Movimientos y fichas','Reimprime comprobantes, adjunta firmas y consulta quién registró cada entrega.',`<button class="btn primary" onclick="movement('ENTREGA')">${ico('plus')} Nueva entrega</button>`)+`<div class="card"><div class="filters"><input id="histQ" placeholder="Buscar ficha, asesor o responsable…" oninput="historyRows()"><select id="histKind" onchange="historyRows()"><option value="">Todos los movimientos</option>${Object.entries(labels).filter(([k])=>k!=='PRUEBA').map(([k,l])=>`<option value="${k}">${l}</option>`).join('')}</select></div><div id="histRows"></div><p class="small">Últimos 400 documentos reales; las pruebas están en su sección separada. El Excel mensual incluye todos los movimientos de su período.</p></div>`;historyRows()}
@@ -1637,9 +1640,9 @@ async function submitMove(ev){ev.preventDefault();if(!cart.length){modalError('A
 const btn=$('moveSave');btn.disabled=true;
 try{const operator=$('mOperator').value,mode=isTestOrder()?'PRUEBA':'REAL';
 const r=await api('/api/movement',{key:moveKey,kind:moveKind,mode,confirm_real:mode==='REAL'&&$('mConfirm').checked,day:$('mDay').value,operator,recipient:$('mRecipient').value,reference:$('mReference').value,note:$('mNote').value,items:cart,import_hash:importHash});
-rememberOperator(operator);closeModal();if(r.is_test)page='tests';await refresh();await showDocument(r.id);toast(r.is_test?'PRUEBA guardada. Inventario y reportes reales sin cambios.':'Movimiento REAL guardado. Inventario actualizado.');
+rememberOperator(operator);closeModal();if(r.is_test)page='tests';await afterMutation(r,true);toast(r.is_test?'PRUEBA guardada. Inventario y reportes reales sin cambios.':'Movimiento REAL guardado. Inventario actualizado.');
 }catch(e){modalError(e)}finally{if($('moveSave'))$('moveSave').disabled=false}}
-async function showDocument(id){try{const d=await api('/api/document?id='+id),test=d.kind==='PRUEBA';
+async function showDocument(id,ready=null){try{const d=ready&&Number(ready.id)===Number(id)?ready:await api('/api/document?id='+id),test=d.kind==='PRUEBA';
 modal(`${test?'PRUEBA':'Ficha'} ${esc(d.number)}`,`${labels[d.kind]} · ${datefmt(d.day)}`,
 `<div class="${test?'notice warn':d.reversed_by?'notice warn':'success'}">${test?'<b>PRUEBA — NO DESCUENTA NI RESERVA INVENTARIO.</b><br>Este documento no acredita una entrega real ni aparece en los reportes de mercancía entregada.':d.reversed_by?'Documento anulado; se conserva el historial.':'Entrega/movimiento real guardado. Imprimir o adjuntar firma no vuelve a mover inventario.'}</div>
 <div class="formgrid"><div><div class="small">Destino / asesor</div><b>${esc(d.recipient||'Almacén')}</b></div><div><div class="small">Registrado por</div><b>${esc(d.operator)}</b></div></div><div class="divider"></div><div class="tablewrap" style="max-height:310px"><table><thead><tr><th>Artículo</th><th>Marca</th><th class="num">Cantidad</th><th>Impacto</th></tr></thead><tbody>${d.items.map(x=>`<tr><td>${esc(x.name)}<div class="code">${esc(x.code)}</div></td><td>${esc(x.brand)}</td><td class="num">${fmt(x.quantity)}</td><td>${test?'Sin cambio':esc(x.disposition||(x.delta>0?'Ingreso':x.delta<0?'Salida':'Sin cambio'))}</td></tr>`).join('')||'<tr><td colspan="4">Conteo sin diferencias.</td></tr>'}</tbody></table></div>
@@ -1648,9 +1651,9 @@ ${test?'<div class="notice">Para una entrega efectiva, crea una nueva ficha en m
 ${!test&&!d.reversed_by&&!['APERTURA','AJUSTE','ANULACION'].includes(d.kind)?`<details style="margin-top:20px"><summary>Corregir un movimiento equivocado</summary><p class="small">Anular crea una contrapartida; no borra el original.</p><button class="btn sm danger" onclick="cancelDoc(${d.id})">Anular con motivo</button></details>`:''}`,
 `<button class="btn" onclick="closeModal()">Cerrar</button><button class="btn primary" onclick="download('/api/receipt?id=${d.id}')">${ico('file')} Descargar ${test?'PRUEBA':'ficha'} PDF</button>`,true)}catch(e){toast(e.message,true)}}
 async function attachDocument(id,file){try{await api('/api/attach',{...await readFile(file),document_id:id});await showDocument(id);toast('Firma adjuntada. El inventario no se modificó.')}catch(e){modalError(e)}}
-async function cancelDoc(id){const note=prompt('Motivo de la anulación (mínimo 8 caracteres):');if(!note)return;const operator=prompt('Nombre de quien realiza la corrección:',savedOperator());if(!operator)return;if(!confirm('Se anulará la ficha mediante una contrapartida, sin borrar su historial. ¿Continuar?'))return;try{const r=await api('/api/cancel',{key:key(),id,note,operator});closeModal();await refresh();await showDocument(r.id)}catch(e){modalError(e)}}
-function newProduct(){modal('Crear artículo','Se creará con saldo cero. Después registra su recepción.',`<form id="newForm"><div class="formgrid"><div class="field full"><label>Marca / proveedor</label><input id="newBrand" list="brandNames" required maxlength="200"><datalist id="brandNames">${S.brands.map(b=>`<option value="${esc(b.name)}">`).join('')}</datalist></div><div class="field full"><label>Nombre del artículo</label><input id="newName" maxlength="200" required placeholder="Ejemplo: GORRAS"></div></div><div class="notice">El código se asigna automáticamente y no cambia cuando vuelves a recibir el mismo artículo.</div></form>`,`<button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" type="submit" form="newForm">Crear artículo</button>`);$('newForm').onsubmit=async e=>{e.preventDefault();try{const r=await api('/api/product',{brand:$('newBrand').value,name:$('newName').value});closeModal();await refresh();toast(`Artículo ${r.code} creado en cero. Ya puedes registrar su entrada.`)}catch(er){modalError(er)}}}
-function resolveEvent(id){const ev=S.events.find(e=>e.id===id);if(!ev)return;const k=key();const pending=ev.items.filter(x=>x.pending>0);modal('Regreso y cierre de evento',`${ev.number} · ${esc(ev.recipient)}`,`${peopleList()}<form id="resolveForm"><div class="formgrid"><div class="field"><label>Fecha</label><input id="rDay" type="date" value="${S.today}" max="${S.today}" min="${ev.day}" required></div><div class="field"><label>Registrado por</label><input id="rOperator" list="operators" value="${esc(savedOperator())}" required></div></div><div class="notice">${ev.kind==='PRESTAMO'?'Registra únicamente material que regresó físicamente. Lo restante seguirá pendiente.':'Lo que regresa vuelve al almacén. Lo entregado durante el evento se confirma, pero no se descuenta otra vez. Puedes dejar cantidades pendientes.'}</div><div class="tablewrap"><table><thead><tr><th>Artículo / marca</th><th class="num">Pendiente</th><th>Regresa</th>${ev.kind==='EVENTO'?'<th>Entregado en evento</th>':''}</tr></thead><tbody>${pending.map(p=>`<tr><td>${esc(p.name)}<div class="small">${p.code} · ${esc(p.brand)}</div></td><td class="num">${fmt(p.pending)}</td><td><input class="qtybox" id="return_${p.product_id}" type="number" min="0" max="${p.pending}" value="0"></td>${ev.kind==='EVENTO'?`<td><input class="qtybox" id="deliver_${p.product_id}" type="number" min="0" max="${p.pending}" value="0"></td>`:''}</tr>`).join('')}</tbody></table></div><div class="field" style="margin-top:17px"><label>Observaciones</label><textarea id="rNote" maxlength="2000"></textarea></div></form>`,`<button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="resolveSave" form="resolveForm" type="submit">Confirmar cantidades</button>`,true);$('resolveForm').onsubmit=async e=>{e.preventDefault();$('resolveSave').disabled=true;try{const r=await api('/api/resolve',{key:k,event_id:id,day:$('rDay').value,operator:$('rOperator').value,note:$('rNote').value,items:pending.map(p=>({product_id:p.product_id,returned:$('return_'+p.product_id).value,delivered:$('deliver_'+p.product_id)?.value||0}))});closeModal();await refresh();await showDocument(r.id)}catch(er){modalError(er)}finally{if($('resolveSave'))$('resolveSave').disabled=false}}}
+async function cancelDoc(id){const note=prompt('Motivo de la anulación (mínimo 8 caracteres):');if(!note)return;const operator=prompt('Nombre de quien realiza la corrección:',savedOperator());if(!operator)return;if(!confirm('Se anulará la ficha mediante una contrapartida, sin borrar su historial. ¿Continuar?'))return;try{const r=await api('/api/cancel',{key:key(),id,note,operator});closeModal();await afterMutation(r,true)}catch(e){modalError(e)}}
+function newProduct(){modal('Crear artículo','Se creará con saldo cero. Después registra su recepción.',`<form id="newForm"><div class="formgrid"><div class="field full"><label>Marca / proveedor</label><input id="newBrand" list="brandNames" required maxlength="200"><datalist id="brandNames">${S.brands.map(b=>`<option value="${esc(b.name)}">`).join('')}</datalist></div><div class="field full"><label>Nombre del artículo</label><input id="newName" maxlength="200" required placeholder="Ejemplo: GORRAS"></div></div><div class="notice">El código se asigna automáticamente y no cambia cuando vuelves a recibir el mismo artículo.</div></form>`,`<button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" type="submit" form="newForm">Crear artículo</button>`);$('newForm').onsubmit=async e=>{e.preventDefault();try{const r=await api('/api/product',{brand:$('newBrand').value,name:$('newName').value});closeModal();await afterMutation(r);toast(`Artículo ${r.code} creado en cero. Ya puedes registrar su entrada.`)}catch(er){modalError(er)}}}
+function resolveEvent(id){const ev=S.events.find(e=>e.id===id);if(!ev)return;const k=key();const pending=ev.items.filter(x=>x.pending>0);modal('Regreso y cierre de evento',`${ev.number} · ${esc(ev.recipient)}`,`${peopleList()}<form id="resolveForm"><div class="formgrid"><div class="field"><label>Fecha</label><input id="rDay" type="date" value="${S.today}" max="${S.today}" min="${ev.day}" required></div><div class="field"><label>Registrado por</label><input id="rOperator" list="operators" value="${esc(savedOperator())}" required></div></div><div class="notice">${ev.kind==='PRESTAMO'?'Registra únicamente material que regresó físicamente. Lo restante seguirá pendiente.':'Lo que regresa vuelve al almacén. Lo entregado durante el evento se confirma, pero no se descuenta otra vez. Puedes dejar cantidades pendientes.'}</div><div class="tablewrap"><table><thead><tr><th>Artículo / marca</th><th class="num">Pendiente</th><th>Regresa</th>${ev.kind==='EVENTO'?'<th>Entregado en evento</th>':''}</tr></thead><tbody>${pending.map(p=>`<tr><td>${esc(p.name)}<div class="small">${p.code} · ${esc(p.brand)}</div></td><td class="num">${fmt(p.pending)}</td><td><input class="qtybox" id="return_${p.product_id}" type="number" min="0" max="${p.pending}" value="0"></td>${ev.kind==='EVENTO'?`<td><input class="qtybox" id="deliver_${p.product_id}" type="number" min="0" max="${p.pending}" value="0"></td>`:''}</tr>`).join('')}</tbody></table></div><div class="field" style="margin-top:17px"><label>Observaciones</label><textarea id="rNote" maxlength="2000"></textarea></div></form>`,`<button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="resolveSave" form="resolveForm" type="submit">Confirmar cantidades</button>`,true);$('resolveForm').onsubmit=async e=>{e.preventDefault();$('resolveSave').disabled=true;try{const r=await api('/api/resolve',{key:k,event_id:id,day:$('rDay').value,operator:$('rOperator').value,note:$('rNote').value,items:pending.map(p=>({product_id:p.product_id,returned:$('return_'+p.product_id).value,delivered:$('deliver_'+p.product_id)?.value||0}))});closeModal();await afterMutation(r,true)}catch(er){modalError(er)}finally{if($('resolveSave'))$('resolveSave').disabled=false}}}
 function monthOptions(){const list=[];let d=new Date(S.opening_day.slice(0,7)+'-01T12:00:00');const end=S.today.slice(0,7);for(let i=0;i<1200;i++){const m=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');if(m>end)break;list.push(m);d.setMonth(d.getMonth()+1)}return list.reverse().map(m=>`<option value="${m}">${new Date(m+'-01T12:00:00').toLocaleDateString('es-VE',{month:'long',year:'numeric'})}</option>`).join('')}
 function reports(){$('content').innerHTML=header('Cierre y reportes','Descarga un resumen para gerencia o un reporte independiente para cada marca.',`<button class="btn" onclick="startCount()">${ico('check')} Hacer conteo físico</button>`)+`<div class="card"><div class="filters"><div class="field"><label>Mes del reporte</label><select id="repMonth" onchange="loadReport()">${monthOptions()}</select></div><div class="field"><label>Destinatario</label><select id="repBrand" onchange="loadReport()"><option value="">Gerencia · todas las marcas</option>${brandOptions(false)}</select></div><div style="flex:1"></div><div class="actions"><button class="btn" onclick="exportReport('xlsx')">Excel detallado</button><button class="btn primary" onclick="exportReport('pdf')">${ico('file')} Reporte PDF</button></div></div><div id="repBody"><div class="empty">Preparando el resumen…</div></div></div><div class="card"><h2>Cerrar el mes</h2><p class="small">El cierre conserva una fotografía del reporte y bloquea movimientos con fecha de ese mes. Solo se permite después del conteo final y cuando llegue el último día del mes.</p><div class="actions" style="margin-top:18px"><button id="closeMonthBtn" class="btn soft" onclick="closeMonthAction()">Cerrar el mes seleccionado</button><button class="btn" onclick="allReports()">Descargar todos los reportes en ZIP</button></div><div class="notice">El ZIP completo es para uso interno. A cada proveedor se le entregan solo sus archivos. Las firmas y planillas no se adjuntan a los reportes de proveedores.</div></div>`;loadReport()}
 let reportSeq=0;
@@ -1665,7 +1668,7 @@ function countProgress(){const n=Object.keys(countDraft).length,d=countProducts.
 function countZeros(){if(!confirm('¿Verificaste físicamente que todos los artículos con saldo esperado cero están realmente agotados?'))return;for(const p of countProducts)if(p.stock===0&&countDraft[p.id]===undefined)countDraft[p.id]=0;countRows()}
 async function importCount(file){try{const r=await api('/api/import',{...await readFile(file),mode:'count'});for(const x of r.items)countDraft[x.product_id]=x.quantity;countRows();toast('Cantidades cargadas para revisar. Todavía no se aplicaron ajustes.')}catch(e){modalError(e)}}
 function saveCountDraft(){const cs=v=>'"'+String(v??'').replace(/"/g,'""')+'"';let content='\ufeffCodigo;Marca;Articulo;Contado\r\n'+countProducts.map(p=>[p.code,p.brand,p.name,countDraft[p.id]??''].map(cs).join(';')).join('\r\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([content],{type:'text/csv;charset=utf-8'}));a.download='Borrador_conteo.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
-async function submitCount(e){e.preventDefault();$('countSave').disabled=true;try{const r=await api('/api/count',{key:countKey,revision:countRevision,day:$('cDay').value,operator:$('cOperator').value,note:$('cNote').value,items:countProducts.map(p=>({product_id:p.id,counted:countDraft[p.id]??null}))});closeModal();await refresh();await showDocument(r.id);toast('Conteo completo guardado con su historial de diferencias.')}catch(er){modalError(er)}finally{if($('countSave'))$('countSave').disabled=false}}
+async function submitCount(e){e.preventDefault();$('countSave').disabled=true;try{const r=await api('/api/count',{key:countKey,revision:countRevision,day:$('cDay').value,operator:$('cOperator').value,note:$('cNote').value,items:countProducts.map(p=>({product_id:p.id,counted:countDraft[p.id]??null}))});closeModal();await afterMutation(r,true);toast('Conteo completo guardado con su historial de diferencias.')}catch(er){modalError(er)}finally{if($('countSave'))$('countSave').disabled=false}}
 function settings(){const cfg=S.settings;$('content').innerHTML=header('Ayuda y ajustes','Estos ajustes se guardan en la base del almacén, no en el navegador.')+`
 <div class="twocol"><div><div class="card"><h2>Datos de las fichas</h2><form id="settingsForm" style="margin-top:18px"><div class="formgrid">
 <div class="field full"><label>Empresa</label><input id="setCompany" value="${esc(cfg.company)}" required maxlength="200"></div>
@@ -1677,8 +1680,8 @@ function settings(){const cfg=S.settings;$('content').innerHTML=header('Ayuda y 
 <div><div class="card"><h2>Logos</h2><p class="small">El logo original de Makropetrol ya está incorporado. Puedes reemplazarlo o agregar el de cada proveedor.</p><div class="field"><label>Destino del logo</label><select id="logoBrand"><option value="0">Makropetrol · fichas y gerencia</option>${brandOptions(false)}</select></div><div class="dropzone" style="margin-top:15px">Logo en PNG o JPG<input type="file" accept=".png,.jpg,.jpeg" onchange="uploadLogo(this.files[0])"></div><div id="logoMessage"></div></div>
 <div class="card"><h2>Guardado y respaldo</h2><div class="notice ${S.cloud?'':'warn'}">${S.cloud?'Base Cloudflare D1 + R2 externa conectada. Todas las PC que abran esta misma app trabajan con el mismo inventario, logos y ajustes.':'Los datos están en el servidor de esta app y se comparten entre sus visitantes, pero Streamlit puede perderlos al recrear el servidor. El guardado permanente externo todavía NO está activado. Descarga un respaldo antes de actualizar y al terminar la jornada.'}</div><button class="btn primary" onclick="download('/api/backup')">Descargar respaldo completo</button><p class="small" style="line-height:1.7">Para descargar copias, recuperar datos o revisar puntos de recuperación abre “Guardado externo · respaldos y recuperación” debajo del espacio de trabajo. Sin inicio de sesión, cualquier visitante autorizado por el alojamiento puede modificar el inventario.</p></div>
 <div class="card"><h2>Carga de cantidades</h2><p class="small">Usa la plantilla para entradas o salidas. Crea los artículos nuevos primero; no vuelvas a cargar el conteo de apertura como si fuera una recepción.</p><button class="btn soft" onclick="download('/api/template?mode=movement')">Descargar plantilla</button></div></div></div><div class="small">Versión ${esc(S.version)} · Un almacén · Cantidades por marca y artículo.</div>`;
-$('settingsForm').onsubmit=async e=>{e.preventDefault();const btn=e.target.querySelector('button');btn.disabled=true;try{await api('/api/settings',{company:$('setCompany').value,department:$('setDepartment').value,warehouse:$('setWarehouse').value,receipt_note:$('setNote').value});await refresh();toast('Ajustes compartidos guardados.')}catch(er){toast(er.message,true)}finally{btn.disabled=false}}}
-async function uploadLogo(file){try{await api('/api/logo',{...await readFile(file),brand_id:$('logoBrand').value});await refresh();toast('Logo guardado para el equipo y sus fichas.')}catch(e){$('logoMessage').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+$('settingsForm').onsubmit=async e=>{e.preventDefault();const btn=e.target.querySelector('button');btn.disabled=true;try{const r=await api('/api/settings',{company:$('setCompany').value,department:$('setDepartment').value,warehouse:$('setWarehouse').value,receipt_note:$('setNote').value});await afterMutation(r);toast('Ajustes compartidos guardados.')}catch(er){toast(er.message,true)}finally{btn.disabled=false}}}
+async function uploadLogo(file){try{const r=await api('/api/logo',{...await readFile(file),brand_id:$('logoBrand').value});await afterMutation(r);toast('Logo guardado para el equipo y sus fichas.')}catch(e){$('logoMessage').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
 
 let sellerSeq=0;
 function sellers(){$('content').innerHTML=header('Entregas por asesor','Entregas REALES por vendedor. Los pedidos de prueba no se incluyen.')+`<div class="card"><div class="filters">
@@ -1696,7 +1699,7 @@ $('sellerBody').innerHTML=`<div class="stats">${stat('Unidades entregadas',r.uni
 window.addEventListener('marketing-bootstrap',e=>{if(!S)acceptState(e.detail)});
 if(window.__marketingBootstrap)acceptState(window.__marketingBootstrap);
 let syncing=false;
-async function syncCheck(){if(!S||syncing||document.hidden||$('modalroot').children.length||page==='settings')return;syncing=true;try{const r=await api('/api/revision');if(r.revision!==S.revision||r.epoch!==S.storage_epoch){if(!['sellers','reports'].includes(page))await refresh();else toast('Hay cambios de otra PC. Pulsa Actualizar para verlos.')}}catch(_){}finally{syncing=false}}
+async function syncCheck(){if(!S||syncing||document.hidden||$('modalroot').children.length||page==='settings')return;syncing=true;try{const r=await api('/api/revision?known='+encodeURIComponent(S.revision)+'&epoch='+encodeURIComponent(S.storage_epoch));if(r.revision!==S.revision||r.epoch!==S.storage_epoch){if(!['sellers','reports'].includes(page)){if(r._next_state)acceptState(r._next_state);else await refresh();}else toast('Hay cambios de otra PC. Pulsa Actualizar para verlos.')}}catch(_){}finally{syncing=false}}
 setInterval(syncCheck,45000);window.addEventListener('focus',syncCheck);
 
 </script></body></html>
@@ -1912,7 +1915,7 @@ def archive_output(blob,name,mime):
 
 _dispatch_v151=dispatch
 
-def dispatch(request):
+def _dispatch_persistent(request):
     body=request.get('data') if isinstance(request.get('data'),dict) else {}
     token=_REQUEST_INFO.set({'path':str(request.get('path',''))[:200],'id':str(request.get('id',''))[:100],
                              'operator':str(body.get('operator',''))[:200]})
@@ -1956,6 +1959,10 @@ def run_streamlit():
     import streamlit as st
     import streamlit.components.v1 as components
     st.set_page_config(page_title='Marketing · Makropetrol',page_icon='📦',layout='wide',initial_sidebar_state='collapsed')
+    # UI-only preference. No permissions, cache clearing or data deletion here.
+    try:st.set_option('client.toolbarMode','minimal')
+    except Exception:pass  # CSS remains the fallback for the pinned Streamlit version.
+    st.markdown(SHELL_CSS,unsafe_allow_html=True)
     st.markdown('''<style>.stApp{background:#f7f5fa;color:#302340}
     .block-container{padding:.35rem .6rem .5rem;max-width:none}
     [data-testid="stExpander"]{background:white;border-radius:14px}
@@ -2037,8 +2044,7 @@ def run_streamlit():
     except AppError as exc:
         setup_ui(str(exc))
     try:
-        ensure_initialized()
-        first=snapshot()
+        first=load_workspace_state()
     except StorageNotInitialized:
         if DB_PATH.is_file():
             try:
@@ -2211,7 +2217,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise AppError('El Worker intentó redirigir la conexión. Revisa su URL; no se enviaron claves a otro destino.')
 
 
-CF_USER_AGENT = 'MakropetrolMarketing/1.7.2 (Streamlit; D1-R2; server-to-server)'
+CF_USER_AGENT = 'MakropetrolMarketing/1.7.3 (Streamlit; D1-R2; server-to-server)'
 
 
 def _cf_error_info(status, response_headers, body, method, path):
@@ -2284,7 +2290,7 @@ def cf_api(method,path,payload=None,raw=None,binary=False):
                 raise AppError('La clave configurada no coincide con MARKETING_API_TOKEN del Worker. Conserva tu clave y comprueba que ambos valores coincidan. ['+label+']') from None
             if exc.code==403:
                 message=('Cloudflare bloqueó el acceso antes de confirmar la conexión. '
-                         'Este cliente ya envía la identificación MakropetrolMarketing/1.7.2. '
+                         'Este cliente ya envía la identificación MakropetrolMarketing/1.7.3. '
                          'No borres D1, R2 ni cambies las existencias; conserva este diagnóstico para revisar la regla o el Worker.')
                 if cf_code=='1010':
                     message='Cloudflare rechazó la identificación del cliente (1010). '+message
@@ -2399,6 +2405,7 @@ def _get_mirror(revision=None):
             from urllib.parse import urlencode
             packet=cf_api('GET','/v1/rows?'+urlencode({'revision':wanted,'after':after}))
             if packet.get('revision')!=wanted:raise AppError('La lectura cambió de revisión. No se utilizaron datos mezclados.')
+            prepared=[];references={}
             for row in packet.get('rows',[]):
                 table,key,data_text=row['table_name'],row['row_key'],row['data_json']
                 if table not in REQUIRED_COLUMNS or (table,key) in seen:raise AppError('Registro remoto inválido o repetido.')
@@ -2406,6 +2413,21 @@ def _get_mirror(revision=None):
                 if hashlib.sha256(data_text.encode()).hexdigest()!=row['row_sha']:raise AppError('Una fila remota no pasó la verificación de integridad.')
                 values=json.loads(data_text);cols=REQUIRED_COLUMNS[table]
                 if set(values)!=set(cols) or str(values[cols[0]])!=key:raise AppError('Columnas remotas incompatibles.')
+                for value in values.values():
+                    if isinstance(value,dict):
+                        if set(value)!=set(('$r2','encoding','size')) or value['encoding'] not in ('bytes','utf8'):
+                            raise AppError('Referencia de archivo incompatible. No se reinició el almacén.')
+                        digest=value['$r2'];size=value['size']
+                        if not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest):
+                            raise AppError('Huella de archivo inválida.')
+                        if isinstance(size,bool) or not isinstance(size,int) or not 0<=size<=CF_MAX_OBJECT:
+                            raise AppError('Tamaño de archivo remoto inválido.')
+                        if digest in references and references[digest]!=size:
+                            raise AppError('Una referencia de R2 tiene tamaños incompatibles.')
+                        references[digest]=size
+                prepared.append((table,cols,values))
+            _prefetch_r2(references)
+            for table,cols,values in prepared:
                 decoded=[_decode_value(values[k]) for k in cols]
                 c.execute(f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",decoded)
             next_after=packet.get('next')
@@ -2458,9 +2480,26 @@ def _commit_changes(before,c,revision):
 @contextmanager
 def reading():
     with LOCK:
-        source,revision=_get_mirror();c=_clone(source);handle=_CF_CURRENT_REV.set(revision)
-        try:yield c
-        finally:c.close();_CF_CURRENT_REV.reset(handle)
+        scope=_READ_SCOPE.get()
+        if scope is None:
+            source,revision=_get_mirror();c=_clone(source)
+            c.execute('PRAGMA query_only=ON');handle=_CF_CURRENT_REV.set(revision)
+            try:yield c
+            finally:c.close();_CF_CURRENT_REV.reset(handle)
+            return
+        if scope['identity']!=storage_identity():
+            raise AppError('La conexión cambió durante la lectura. Vuelve a abrir el almacén.')
+        if scope['reader'] is None:
+            cached=_runtime.cf_cache.get(scope['identity'])
+            if cached and scope['known_revision'] is not None and cached['revision']==scope['known_revision']:
+                source,revision=cached['db'],cached['revision']
+            else:
+                source,revision=_get_mirror()
+            c=_clone(source);c.execute('PRAGMA query_only=ON')
+            scope['reader']=c;scope['revision']=revision
+        handle=_CF_CURRENT_REV.set(scope['revision'])
+        try:yield scope['reader']
+        finally:_CF_CURRENT_REV.reset(handle)
 
 
 @contextmanager
@@ -2489,11 +2528,15 @@ def transaction():
             identity=storage_identity();previous=_runtime.cf_cache.pop(identity,None)
             if previous:previous['db'].close()
             _runtime.cf_cache[identity]={'revision':new_revision,'db':_clone(c)}
+            _invalidate_read_scope(new_revision)
+            _runtime.cf_view_cache.pop(identity,None)
         except BaseException:
             try:c.rollback()
             except Exception:pass
             previous=_runtime.cf_cache.pop(storage_identity(),None)
             if previous:previous['db'].close()
+            _invalidate_read_scope(None)
+            _runtime.cf_view_cache.pop(storage_identity(),None)
             raise
         finally:c.close();_CF_CURRENT_REV.reset(handle)
 
@@ -2560,6 +2603,118 @@ def cf_diagnostic():
     result=cf_api('POST','/v1/health',payload={})
     if not result.get('d1_read') or not result.get('r2_write_read'):raise AppError('La comprobación no confirmó D1 y R2.')
     return result
+
+
+# ---------------------------------------------------------------------------
+# 1.7.3 · Optimizations are caches of confirmed revisions, NEVER durable storage.
+# Compatible with the existing marketing-d1-r2-v1 Worker: no remote migration.
+# ---------------------------------------------------------------------------
+SHELL_CSS = '''<style id="marketing-shell-173">
+header[data-testid="stHeader"], [data-testid="stToolbar"],
+[data-testid="stDecoration"], [data-testid="stStatusWidget"],
+.stAppDeployButton, [data-testid="stAppDeployButton"], #MainMenu {
+  display:none!important; height:0!important; min-height:0!important;
+  visibility:hidden!important; pointer-events:none!important;
+}
+html, body, .stApp, [data-testid="stAppViewContainer"],
+[data-testid="stMain"] { background:#f7f5fa!important; }
+[data-testid="stMainBlockContainer"], .block-container {
+  padding-top:.35rem!important; padding-bottom:.5rem!important;
+  max-width:none!important;
+}
+/* Keep the bottom Cloud console and recovery tools available to the owner. */
+</style>'''
+_READ_SCOPE = contextvars.ContextVar('marketing_173_read_scope',default=None)
+if not hasattr(_runtime,'cf_view_cache'):_runtime.cf_view_cache={}
+
+
+@contextmanager
+def read_scope():
+    """One read-only snapshot per logical request. No TTL, offline or stale fallback."""
+    current=_READ_SCOPE.get()
+    if current is not None:
+        yield current
+        return
+    with LOCK:
+        scope={'identity':storage_identity(),'reader':None,'revision':None,
+               'known_revision':None,'retired':[]}
+        token=_READ_SCOPE.set(scope)
+        try:yield scope
+        finally:
+            _READ_SCOPE.reset(token)
+            for connection in scope['retired']+([scope['reader']] if scope['reader'] is not None else []):
+                connection.close()
+
+
+def _invalidate_read_scope(confirmed_revision):
+    scope=_READ_SCOPE.get()
+    if scope is not None:
+        if scope['reader'] is not None:scope['retired'].append(scope['reader'])
+        scope['reader']=None;scope['revision']=None
+        scope['known_revision']=confirmed_revision
+
+
+def _prefetch_r2(references):
+    """At most four independent downloads. Every object is verified again on use."""
+    pending=[(digest,size) for digest,size in references.items() if not _blob_cache_path(digest).is_file()]
+    def load(item):
+        # Return no bytes: verified files live in the disposable local blob cache.
+        cf_get_blob(item[0],item[1])
+    if len(pending)<2:
+        for item in pending:load(item)
+    else:
+        with ThreadPoolExecutor(max_workers=min(4,len(pending)),thread_name_prefix='marketing-r2') as pool:
+            for _ in pool.map(load,pending):pass
+
+
+def snapshot():
+    """Rebuild the dashboard only when the verified Cloudflare revision changes."""
+    with read_scope():
+        with reading() as c:
+            key=(VERSION,_CF_CURRENT_REV.get(),today().isoformat(),meta(c,'storage_epoch'))
+            identity=storage_identity();cached=_runtime.cf_view_cache.get(identity)
+            if cached is not None and cached['key']==key:
+                return copy.deepcopy(cached['data'])
+            value=_snapshot_uncached()
+            _runtime.cf_view_cache[identity]={'key':key,'data':copy.deepcopy(value)}
+            return value
+
+
+def load_workspace_state():
+    # Before 1.7.3 initialization and the screen made separate remote reads.
+    with read_scope():
+        ensure_initialized()
+        return snapshot()
+
+
+def dispatch(request):
+    """Group reads and send the confirmed state/receipt with a successful mutation."""
+    try:
+        with read_scope():
+            response=_dispatch_persistent(request)
+            path=urlparse(str(request.get('path',''))).path
+            body=response.get('body')
+            if response.get('status')!=200 or not isinstance(body,dict):return response
+            if request.get('method','GET')=='POST' and path in POST_ROUTES and path!='/api/import':
+                try:
+                    body['_next_state']=snapshot()
+                    if body.get('id') and path in ('/api/movement','/api/resolve','/api/cancel','/api/count','/api/keystone-quantities'):
+                        body['_next_document']=document_data(integer(body['id']))
+                except Exception as exc:
+                    # A refresh error must not turn a confirmed commit into a failed write.
+                    logging.getLogger('marketing').warning('Guardado confirmado; vista pendiente (%s)',type(exc).__name__)
+                    body['_refresh_required']=True
+            elif path=='/api/revision':
+                query=parse_qs(urlparse(str(request.get('path',''))).query)
+                known=query.get('known',[None])[0];epoch=query.get('epoch',[None])[0]
+                if known is not None and (known!=str(body.get('revision')) or epoch!=body.get('epoch')):
+                    body['_next_state']=snapshot()
+            return response
+    except AppError as exc:
+        return {'id':request.get('id'),'status':503,'body':{'error':str(exc)}}
+    except Exception as exc:
+        logging.getLogger('marketing').error('Lectura agrupada fallida: %s',type(exc).__name__)
+        return {'id':request.get('id'),'status':503,'body':{'error':'No se pudo consultar el almacén remoto. No se utilizó un inventario temporal.'}}
 
 
 if __name__ == '__main__':
